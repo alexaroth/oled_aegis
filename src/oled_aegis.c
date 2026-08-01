@@ -1091,6 +1091,7 @@ typedef struct {
     // This avoids per-tick log spam and shows both matching and non-matching windows.
     char browserTitles[MAX_BROWSER_WINDOW_INFO][256];
     int browserMatched[MAX_BROWSER_WINDOW_INFO];  // 1 = matched a hint, 0 = no hint
+    RECT browserRects[MAX_BROWSER_WINDOW_INFO];   // window rects, used to map media to monitors without title hints
     int browserWindowCount;
 } MediaEnumContext;
 
@@ -1325,6 +1326,7 @@ BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam) {
         strncpy(ctx->browserTitles[idx], title, 255);
         ctx->browserTitles[idx][255] = '\0';
         ctx->browserMatched[idx] = matched;
+        ctx->browserRects[idx] = rect;
     }
 
     if (!matched) {
@@ -1446,6 +1448,24 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT]) {
         }
     }
 
+    // No window title hinted at video, but exactly one visible browser window
+    // has active audio. That window must be where the audio is coming from (a
+    // browser's audio session can't belong to a window that doesn't exist), so
+    // trust its position instead of falling back to blocking all enabled
+    // monitors. This fixes autoplaying videos on sites with no video hint in
+    // the tab title (e.g. Reddit), where the old code deactivated the screen
+    // saver on every enabled monitor even though the video was elsewhere.
+    if (mappedMonitorCount == 0 && ctx.browserWindowCount == 1) {
+        MarkMediaWindowMonitors(&ctx, &ctx.browserRects[0]);
+        for (int i = 0; i < g_monitorCount; i++) {
+            if (ctx.mediaOnMonitor[i]) {
+                localMediaOnMonitor[i] = 1;
+                mediaOnMonitor[i] = 1;
+                mappedMonitorCount++;
+            }
+        }
+    }
+
     int usedGlobalFallback = 0;
     int skippedFallbackForBrowser = 0;
     int skippedFallbackForNoAudio = 0;
@@ -1510,6 +1530,9 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT]) {
             LogMessage("Media detection: browser window %s: '%.120s'",
                        ctx.browserMatched[i] ? "MATCHED  " : "no hint  ",
                        ctx.browserTitles[i]);
+        }
+        for (int i = 0; i < ctx.audioActiveProcessNameCount; i++) {
+            LogMessage("Media detection: active audio process: %s", ctx.audioActiveProcessNames[i]);
         }
         LogMessage("Media monitor detection: mask=0x%08X (activeAudioNames=%d, fallback=%d, browserSkip=%d, noAudioSkip=%d, browserWindows=%d)",
                    mask, ctx.audioActiveProcessNameCount, usedGlobalFallback, skippedFallbackForBrowser, skippedFallbackForNoAudio, ctx.browserWindowCount);
