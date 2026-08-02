@@ -4,7 +4,8 @@ CompileFlags:
     - -fms-compatibility
     - -fms-extensions
     # This is just to satisfy nvim LSP to suppress incorrect missing definition
-    # warnings due to the nature of unity build.
+    # warnings. The project is split into multiple .c files sharing
+    # src/oled_aegis.h; clangd analyzes each file separately.
     - -DLSP_MODE=1
     - -I/home/spenser/.xwin/crt/include
     - -I/home/spenser/.xwin/sdk/include/shared

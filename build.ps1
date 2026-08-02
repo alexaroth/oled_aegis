@@ -6,7 +6,16 @@ if (!(Test-Path -Path $buildDir -PathType Container)) {
 }
 Push-Location $buildDir
 
-$sourceFile = Join-Path $PSScriptRoot "src\oled_aegis.c"
+$sourceFiles = @(
+    (Join-Path $PSScriptRoot "src\oled_aegis.c"),
+    (Join-Path $PSScriptRoot "src\util.c"),
+    (Join-Path $PSScriptRoot "src\logging.c"),
+    (Join-Path $PSScriptRoot "src\config.c"),
+    (Join-Path $PSScriptRoot "src\monitors.c"),
+    (Join-Path $PSScriptRoot "src\media.c"),
+    (Join-Path $PSScriptRoot "src\screensaver.c"),
+    (Join-Path $PSScriptRoot "src\settings.c")
+)
 $resourceFile = Join-Path $PSScriptRoot "src\oled_aegis.rc"
 $outputExe = "oled_aegis.exe"
 $resourceObj = "oled_aegis.res"
@@ -38,11 +47,13 @@ if (Test-Path $envCache) {
     }
 }
 
-# Check if source file exists
-if (!(Test-Path $sourceFile)) {
-    Write-Error "Source file not found: $sourceFile"
-    Pop-Location
-    exit 1
+# Check if source files exist
+foreach ($f in $sourceFiles) {
+    if (!(Test-Path $f)) {
+        Write-Error "Source file not found: $f"
+        Pop-Location
+        exit 1
+    }
 }
 
 # Determine build type from arguments
@@ -67,11 +78,11 @@ $linkResources = if (Test-Path $resourceObj) { $resourceObj } else { "" }
 if ($buildType -eq "debug") {
     # Debug Compile
     Write-Host "Configuration: Debug" -ForegroundColor Yellow
-    cl.exe -FC -Zi -MDd /D "INITGUID" "$sourceFile" /Fe:"$outputExe" /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib psapi.lib dwmapi.lib $linkResources
+    cl.exe -FC -Zi -MDd /D "INITGUID" $sourceFiles /Fe:"$outputExe" /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib psapi.lib dwmapi.lib $linkResources
 } else {
     # Optimized Compile (Release)
     Write-Host "Configuration: Release (Optimized)" -ForegroundColor Yellow
-    cl.exe -O2 -FC -MD /D "INITGUID" "$sourceFile" /Fe:"$outputExe" /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib psapi.lib dwmapi.lib $linkResources
+    cl.exe -O2 -FC -MD /D "INITGUID" $sourceFiles /Fe:"$outputExe" /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib psapi.lib dwmapi.lib $linkResources
 }
 
 if ($LASTEXITCODE -eq 0) {

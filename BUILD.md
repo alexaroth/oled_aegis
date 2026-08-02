@@ -90,8 +90,27 @@ xwin --accept-license splat --output ~/.xwin
 If you prefer to compile manually from a Developer Command Prompt:
 
 ```batch
-cl.exe src\oled_aegis.c /Fe:oled_aegis.exe /O2 /MD /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib
+cl.exe src\oled_aegis.c src\util.c src\logging.c src\config.c src\monitors.c src\media.c src\screensaver.c src\settings.c /Fe:oled_aegis.exe /O2 /MD /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib
 ```
+
+## Source Layout
+
+The source is split into small modules, all sharing the `oled_aegis.h` header:
+
+| File | Contents |
+|---|---|
+| `src/oled_aegis.c` | Entry point (`WinMain`), main window, idle-check timer state machine, tray icon |
+| `src/monitors.c` | Monitor enumeration (GDI + DisplayConfig) and lookup helpers |
+| `src/screensaver.c` | Black screen saver windows: show/hide, topmost, watchdog, shell-window closing |
+| `src/media.c` | Media detection: WASAPI audio sessions, window scan, DEFINE_GUID definitions |
+| `src/settings.c` | Settings dialog UI and `ApplySettings` |
+| `src/config.c` | `.ini` load/save, value clamping, startup registry |
+| `src/logging.c` | Debug log file (append + rotation) |
+| `src/util.c` | Small shared helpers: paths, cursor visibility |
+
+`/D "INITGUID"` is required: the MMDevice/audio-session GUIDs are `DEFINE_GUID`'d
+in `media.c`, and the build flag makes those definitions emit with SELECTANY
+storage.
 
 ## Build Options
 
