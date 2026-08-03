@@ -42,6 +42,7 @@
 #define APP_NAME L"OLED Aegis"
 #define WM_TRAYICON (WM_USER + 1)
 #define TIMER_IDLE_CHECK 1
+#define TIMER_FADE 2
 #define DEFAULT_IDLE_TIMEOUT 300
 #define MAX_LOG_SIZE_BYTES (1 * 1024 * 1024)  // 1 MB log file size limit
 #define MANUAL_ACTIVATION_COOLDOWN_MS 2500
@@ -65,6 +66,7 @@
 #define IDC_MUTED_MEDIA_CHECK       1012
 #define IDC_PIXELSHIFT_EDIT         1010
 #define IDC_MONITOR_BASE            2000  // Monitor checkboxes: IDC_MONITOR_BASE + index
+#define IDC_FADE_EDIT               1013
 
 // Tray context menu command IDs
 #define IDM_SETTINGS            1
@@ -84,6 +86,11 @@
 #define AUDIO_GRACE_PERIOD_MS           30000   // Keep media state during brief audio silence (quiet passages)
 #define CURSOR_COUNTER_MAX_ATTEMPTS     16      // Safety bound when normalizing ShowCursor's counter
 #define TOPMOST_REFRESH_INTERVAL_MS     5000    // Reassert topmost occasionally, not every timer tick
+#define FULLSCREEN_FOREGROUND_MIN_COVERAGE_PCT 95 // Foreground window covering >=95% of a monitor counts as fullscreen for the pixel-probe skip
+#define FADE_TIMER_INTERVAL_MS          15      // Fade animation step (~66 fps)
+#define DEFAULT_FADE_DURATION_MS        400     // Default fade-to-black transition duration
+#define MIN_FADE_DURATION_MS            0       // 0 = instant show/hide (legacy behavior)
+#define MAX_FADE_DURATION_MS            3000
 #define MAX_ACTIVE_AUDIO_PIDS           64      // Upper bound on concurrently active audio sessions we track
 #define MAX_BROWSER_WINDOW_INFO         32      // Max browser windows to collect for diagnostic logging
 
@@ -122,6 +129,15 @@ typedef struct {
     int enabled;
     HWND hScreenSaverWnd;
     DWORD mediaPauseOffsetMs;  // Idle ms excluded from this monitor's countdown while media plays on it
+    // Fade-to-black transition state (only used when fadeDurationMs > 0):
+    // the monitor window's alpha is animated from fadeFromAlpha to
+    // fadeToAlpha over fadeDurationMs. fadeActive is 0 when no transition
+    // is in progress; fadeDurationMs here is the in-flight fade's duration.
+    int fadeActive;
+    BYTE fadeFromAlpha;
+    BYTE fadeToAlpha;
+    DWORD fadeStartTick;
+    DWORD fadeDurationMs;
 } MonitorState;
 
 typedef struct {
@@ -136,6 +152,7 @@ typedef struct {
     int perMonitorMediaDetection;
     int blockOnMutedMedia;
     int pixelShiftCompensation;
+    int fadeDurationMs;  // Fade-to-black transition duration in ms (0 = instant)
 } Config;
 
 typedef struct {
@@ -199,6 +216,7 @@ void CloseShellWindows(int escapeCount);
 int IsShellOverlayWindow(HWND hWnd);
 void EnsureScreenSaverTopmost();
 void VerifyScreenSaverWindows();
+void UpdateFades();
 
 // media.c
 int IsMediaPlaying();

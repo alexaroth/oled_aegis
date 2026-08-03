@@ -6,6 +6,115 @@
 
 #include "oled_aegis.h"
 
+// --- Fade-to-black transition support ---
+//
+// When fadeDurationMs > 0 the black windows are created layered
+// (WS_EX_LAYERED) and their whole-window alpha is animated with
+// SetLayeredWindowAttributes: on activation the window starts fully
+// transparent (the desktop shows through) and darkens to solid black, and on
+// deactivation it lightens back to the desktop before being hidden. The
+// animation steps on the main window's TIMER_FADE timer (see UpdateFades).
+// While a fade is in progress the window is made click-through
+// (WS_EX_TRANSPARENT), because a layered window animated with whole-window
+// alpha is still hit-tested over its entire rect even when fully
+// transparent and would otherwise swallow clicks aimed at the desktop
+// content being revealed or covered. The style is removed once the window
+// is fully opaque again so clicks dismiss the screen saver as usual.
+// With fadeDurationMs == 0 the windows stay plain opaque black and are shown/
+// hidden instantly, exactly as before.
+
+// Current alpha of a monitor's window, computed from its in-flight fade
+// (used to reverse a fade instead of flashing). 255 when not fading.
+static BYTE GetMonitorCurrentAlpha(int monitorIndex) {
+    MonitorState* st = &g_monitorStates[monitorIndex];
+    if (!st->fadeActive) return 255;
+    DWORD elapsed = GetTickCount() - st->fadeStartTick;
+    float t = (elapsed >= st->fadeDurationMs) ? 1.0f : (float)elapsed / (float)st->fadeDurationMs;
+    t = t * t * (3.0f - 2.0f * t);  // smoothstep, matches UpdateFades
+    int alpha = (int)(st->fadeFromAlpha + (st->fadeToAlpha - st->fadeFromAlpha) * t + 0.5f);
+    if (alpha < 0) alpha = 0;
+    if (alpha > 255) alpha = 255;
+    return (BYTE)alpha;
+}
+
+// Make (or stop making) the monitor window click-through. While a fade runs
+// the window is not fully opaque, but layered windows animated via
+// SetLayeredWindowAttributes are still hit-tested over their whole rect, so
+// the fading window would swallow clicks meant for the content below.
+// WS_EX_TRANSPARENT makes the system skip the window during hit testing so
+// mouse messages reach the window underneath (returning HTTRANSPARENT from
+// WM_NCHITTEST only reliably reroutes to windows of the same thread).
+static void SetMonitorWindowClickThrough(HWND hWnd, BOOL clickThrough) {
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+    LONG_PTR newStyle = clickThrough ? (exStyle | WS_EX_TRANSPARENT)
+                                     : (exStyle & ~WS_EX_TRANSPARENT);
+    if (newStyle != exStyle) {
+        SetWindowLongPtrW(hWnd, GWL_EXSTYLE, newStyle);
+    }
+}
+
+// Start (or restart) an alpha animation on one monitor and make sure the
+// fade timer is running.
+static void StartMonitorFade(int monitorIndex, BYTE fromAlpha, BYTE toAlpha) {
+    MonitorState* st = &g_monitorStates[monitorIndex];
+    st->fadeFromAlpha = fromAlpha;
+    st->fadeToAlpha = toAlpha;
+    st->fadeStartTick = GetTickCount();
+    st->fadeDurationMs = (DWORD)g_app.config.fadeDurationMs;
+    st->fadeActive = 1;
+    if (st->hScreenSaverWnd) {
+        SetMonitorWindowClickThrough(st->hScreenSaverWnd, TRUE);
+    }
+    SetTimer(g_app.hWnd, TIMER_FADE, FADE_TIMER_INTERVAL_MS, NULL);
+}
+
+// Called from the main window's WM_TIMER (TIMER_FADE): step every fading
+// monitor window's alpha toward its target, finalizing transitions when
+// they complete (hiding the window after a fade-out) and killing the timer
+// once nothing is fading.
+void UpdateFades() {
+    int anyFading = 0;
+    for (int i = 0; i < g_monitorCount; i++) {
+        MonitorState* st = &g_monitorStates[i];
+        if (!st->fadeActive || !st->hScreenSaverWnd) {
+            st->fadeActive = 0;  // Safety net: window destroyed mid-fade
+            continue;
+        }
+        anyFading = 1;
+
+        DWORD elapsed = GetTickCount() - st->fadeStartTick;
+        float t = (elapsed >= st->fadeDurationMs) ? 1.0f : (float)elapsed / (float)st->fadeDurationMs;
+        t = t * t * (3.0f - 2.0f * t);  // smoothstep: gentle start/end, no harsh pop
+        int alpha = (int)(st->fadeFromAlpha + (st->fadeToAlpha - st->fadeFromAlpha) * t + 0.5f);
+        if (alpha < 0) alpha = 0;
+        if (alpha > 255) alpha = 255;
+
+        SetLayeredWindowAttributes(st->hScreenSaverWnd, 0, (BYTE)alpha, LWA_ALPHA);
+
+        if (t >= 1.0f) {
+            st->fadeActive = 0;
+            if (st->fadeToAlpha == 0) {
+                // Fade-out complete: the desktop is fully revealed, so hide
+                // the window and reset the alpha so a later show starts
+                // opaque again.
+                ShowWindow(st->hScreenSaverWnd, SW_HIDE);
+                SetLayeredWindowAttributes(st->hScreenSaverWnd, 0, 255, LWA_ALPHA);
+                SetMonitorWindowClickThrough(st->hScreenSaverWnd, FALSE);
+                LogMessage("Fade-out complete on monitor %d", i);
+            } else {
+                // Fade-in complete: the window is fully opaque again, so it
+                // must capture clicks again (to dismiss the screen saver).
+                SetMonitorWindowClickThrough(st->hScreenSaverWnd, FALSE);
+                LogMessage("Fade-in complete on monitor %d", i);
+            }
+        }
+    }
+
+    if (!anyFading) {
+        KillTimer(g_app.hWnd, TIMER_FADE);
+    }
+}
+
 LRESULT CALLBACK MonitorWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     static DWORD ignoreInputUntil = 0;
 
@@ -107,8 +216,35 @@ void HideScreenSaverOnMonitor(int monitorIndex) {
     // our own SW_HIDE must not be blocked by that veto.
     g_monitorStates[monitorIndex].screenSaverActive = 0;
 
-    if (g_monitorStates[monitorIndex].hScreenSaverWnd) {
-        ShowWindow(g_monitorStates[monitorIndex].hScreenSaverWnd, SW_HIDE);
+    HWND hWnd = g_monitorStates[monitorIndex].hScreenSaverWnd;
+
+    // Fade-out: animate the window's alpha back to transparent (gradually
+    // revealing the desktop), then hide it once the fade completes in
+    // UpdateFades. This makes the black screen recede smoothly instead of
+    // vanishing instantly.
+    if (g_app.config.fadeDurationMs > 0 && hWnd && IsWindowVisible(hWnd)) {
+        if (g_monitorStates[monitorIndex].fadeActive) {
+            if (g_monitorStates[monitorIndex].fadeToAlpha == 255) {
+                // A fade-in was in progress: reverse it from the current
+                // alpha instead of abruptly hiding the still-visible window.
+                StartMonitorFade(monitorIndex, GetMonitorCurrentAlpha(monitorIndex), 0);
+            }
+            // Already fading out: leave the running fade alone.
+        } else {
+            LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+            if ((exStyle & WS_EX_LAYERED) == 0) {
+                SetWindowLongPtrW(hWnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
+            }
+            SetLayeredWindowAttributes(hWnd, 0, 255, LWA_ALPHA);
+            StartMonitorFade(monitorIndex, 255, 0);
+            LogMessage("Screen saver window fading out on monitor %d", monitorIndex);
+        }
+        g_monitorStates[monitorIndex].lastInputTime = time(NULL);
+        return;
+    }
+
+    if (hWnd) {
+        ShowWindow(hWnd, SW_HIDE);
         LogMessage("Screen saver window hidden on monitor %d", monitorIndex);
     }
 
@@ -259,6 +395,20 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
         if ((exStyle & WS_EX_NOACTIVATE) == 0) {
             SetWindowLongPtrW(g_monitorStates[monitorIndex].hScreenSaverWnd, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE);
         }
+        // Fade-to-black: make the window layered and fully transparent
+        // before it becomes visible so no solid-black frame can flash; the
+        // fade helpers below then darken it gradually. Skipped when a fade
+        // is already running (a fade-out being reversed below starts from
+        // the window's current alpha instead).
+        if (g_app.config.fadeDurationMs > 0 && !g_monitorStates[monitorIndex].fadeActive) {
+            // Re-fetch the style: the NOACTIVATE fix-up above may have just
+            // changed it, and this SetWindowLongPtrW must not drop that flag.
+            exStyle = GetWindowLongPtrW(g_monitorStates[monitorIndex].hScreenSaverWnd, GWL_EXSTYLE);
+            if ((exStyle & WS_EX_LAYERED) == 0) {
+                SetWindowLongPtrW(g_monitorStates[monitorIndex].hScreenSaverWnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
+            }
+            SetLayeredWindowAttributes(g_monitorStates[monitorIndex].hScreenSaverWnd, 0, 0, LWA_ALPHA);
+        }
         // Never let Aero Peek (e.g. hovering a taskbar thumbnail preview)
         // make the black screen transparent/invisible.
         BOOL excludeFromPeek = TRUE;
@@ -279,7 +429,14 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
         // amount on all four sides. This ensures hardware pixel shift (used by some OLED panels
         // to reduce burn-in) cannot expose the desktop behind the screen saver window.
         int pad = g_app.config.pixelShiftCompensation;
-        HWND hWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        // When fading is enabled the window is layered from birth so the
+        // fade-in can begin fully transparent; the alpha is set before the
+        // window is first shown so no solid-black frame can flash.
+        LONG_PTR createExStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        if (g_app.config.fadeDurationMs > 0) {
+            createExStyle |= WS_EX_LAYERED;
+        }
+        HWND hWnd = CreateWindowExW(createExStyle,
                                     L"OLEDAegisScreen", L"",
                                    WS_POPUP,
                                    g_monitors[monitorIndex].rect.left   - pad,
@@ -294,11 +451,27 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
             BOOL excludeFromPeek = TRUE;
             DwmSetWindowAttribute(hWnd, DWMWA_EXCLUDED_FROM_PEEK, &excludeFromPeek, sizeof(excludeFromPeek));
 
+            if (g_app.config.fadeDurationMs > 0) {
+                SetLayeredWindowAttributes(hWnd, 0, 0, LWA_ALPHA);
+            }
+
             ShowWindow(hWnd, SW_SHOWNOACTIVATE);
             UpdateWindow(hWnd);
             g_monitorStates[monitorIndex].hScreenSaverWnd = hWnd;
             g_monitorStates[monitorIndex].screenSaverActive = 1;
             LogMessage("Screen saver window created on monitor %d", monitorIndex);
+        }
+    }
+
+    // Fade-to-black transition: start the alpha animation. If a fade was
+    // already in progress (e.g. a fade-out interrupted by reactivation),
+    // reverse it from the current alpha instead of flashing back to
+    // transparent.
+    if (g_app.config.fadeDurationMs > 0 && g_monitorStates[monitorIndex].hScreenSaverWnd) {
+        if (g_monitorStates[monitorIndex].fadeActive) {
+            StartMonitorFade(monitorIndex, GetMonitorCurrentAlpha(monitorIndex), 255);
+        } else {
+            StartMonitorFade(monitorIndex, 0, 255);
         }
     }
 
@@ -488,6 +661,14 @@ void VerifyScreenSaverWindows() {
             }
         }
 
+        // While a fade is in progress the screen is legitimately not fully
+        // black yet, so skip the pixel probe until the transition completes
+        // (the probe block is the last thing in this loop, so continue is
+        // enough to skip it for this monitor).
+        if (g_monitorStates[i].fadeActive) {
+            continue;
+        }
+
         // Pixel probe: the screen saver paints solid black, so sampling the
         // center of the monitor tells us whether the user can actually SEE
         // the black screen. This catches DWM-level hiding (Aero Peek, etc.)
@@ -501,7 +682,11 @@ void VerifyScreenSaverWindows() {
             // (e.g. a game on another monitor): GDI screen capture during
             // fullscreen-optimized rendering can cause a brief hitch, and a
             // game legitimately showing non-black content would trigger a
-            // pointless restore attempt over it.
+            // pointless restore attempt over it. Matched with tolerance:
+            // borderless-windowed games often report a rect a few pixels off
+            // the monitor bounds (or sized to the work area), which the old
+            // exact-contains test missed and would keep probing (and risking
+            // a hitch) while gaming.
             HWND hFg = GetForegroundWindow();
             int fullscreenForeground = 0;
             if (hFg) {
@@ -509,8 +694,16 @@ void VerifyScreenSaverWindows() {
                 if (GetWindowRect(hFg, &fr)) {
                     for (int m = 0; m < g_monitorCount; m++) {
                         RECT mr = g_monitors[m].rect;
-                        if (fr.left <= mr.left && fr.top <= mr.top &&
-                            fr.right >= mr.right && fr.bottom >= mr.bottom) {
+                        // Fraction of this monitor's area covered by the
+                        // foreground window.
+                        LONG il = fr.left   > mr.left   ? fr.left   : mr.left;
+                        LONG it = fr.top    > mr.top    ? fr.top    : mr.top;
+                        LONG ir = fr.right  < mr.right  ? fr.right  : mr.right;
+                        LONG ib = fr.bottom < mr.bottom ? fr.bottom : mr.bottom;
+                        if (ir <= il || ib <= it) continue;
+                        LONGLONG covered = (LONGLONG)(ir - il) * (ib - it);
+                        LONGLONG monArea  = (LONGLONG)(mr.right - mr.left) * (mr.bottom - mr.top);
+                        if (monArea > 0 && covered * 100 >= monArea * FULLSCREEN_FOREGROUND_MIN_COVERAGE_PCT) {
                             fullscreenForeground = 1;
                             break;
                         }

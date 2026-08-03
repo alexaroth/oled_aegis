@@ -18,6 +18,7 @@ void ClampConfigValues() {
         MIN_PIXEL_SHIFT_COMPENSATION,
         MAX_PIXEL_SHIFT_COMPENSATION
     );
+    g_app.config.fadeDurationMs = ClampInt(g_app.config.fadeDurationMs, MIN_FADE_DURATION_MS, MAX_FADE_DURATION_MS);
 
     g_app.config.mediaDetectionEnabled = g_app.config.mediaDetectionEnabled ? 1 : 0;
     g_app.config.startupEnabled = g_app.config.startupEnabled ? 1 : 0;
@@ -87,6 +88,8 @@ void LoadConfig() {
                     g_app.config.blockOnMutedMedia = atoi(value);
                 } else if (strcmp(key, "pixelShiftCompensation") == 0) {
                     g_app.config.pixelShiftCompensation = atoi(value);
+                } else if (strcmp(key, "fadeDurationMs") == 0) {
+                    g_app.config.fadeDurationMs = atoi(value);
                 } else if (strncmp(key, "monitorEnabled_", 15) == 0) {
                     const char* identifier = key + 15;
                     hadMonitorConfig = 1;
@@ -155,6 +158,7 @@ void SaveConfig() {
         fprintf(f, "perMonitorMediaDetection=%d\n", g_app.config.perMonitorMediaDetection);
         fprintf(f, "blockOnMutedMedia=%d\n", g_app.config.blockOnMutedMedia);
         fprintf(f, "pixelShiftCompensation=%d\n", g_app.config.pixelShiftCompensation);
+        fprintf(f, "fadeDurationMs=%d\n", g_app.config.fadeDurationMs);
         // Save monitor settings using persistent device path as key, with comment showing friendly name
         for (int i = 0; i < g_monitorCount; i++) {
             fprintf(f, "monitorEnabled_%s=%d ; %s\n",

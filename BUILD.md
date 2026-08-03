@@ -8,7 +8,17 @@ You need Visual Studio installed with the C++ build tools. You can use:
 
 ## Quick Start (Windows)
 
-### Option 1: Using build.bat (Easiest)
+### Option 1: Visual Studio Solution (Easiest for Debugging)
+
+1. Open `oled_aegis.sln` in Visual Studio 2022
+2. Set the configuration to **Debug** (or Release) and press **F5**
+
+The project is configured to match the command-line build (see below):
+same source files, `INITGUID` define, libraries, and output location
+(`build\oled_aegis.exe`). Both configurations produce a PDB, so
+breakpoints work out of the box.
+
+### Option 2: Using build.bat (Easiest)
 
 1. Open **Developer Command Prompt for VS 2022** (or your version)
    - Find it in the Start Menu: "Developer Command Prompt for VS 2022"
@@ -28,7 +38,7 @@ You need Visual Studio installed with the C++ build tools. You can use:
    oled_aegis.exe
    ```
 
-### Option 2: Using build.ps1
+### Option 3: Using build.ps1
 
 1. Open PowerShell (can be run from WSL or Windows)
 
@@ -47,7 +57,7 @@ You need Visual Studio installed with the C++ build tools. You can use:
    .\build.ps1 debug
    ```
 
-### Option 3: Using build.sh from WSL
+### Option 4: Using build.sh from WSL
 
 1. Open WSL terminal
 
@@ -92,6 +102,10 @@ If you prefer to compile manually from a Developer Command Prompt:
 ```batch
 cl.exe src\oled_aegis.c src\util.c src\logging.c src\config.c src\monitors.c src\media.c src\screensaver.c src\settings.c /Fe:oled_aegis.exe /O2 /MD /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib
 ```
+
+For breakpoint debugging from the command line, build with `build.ps1 debug`
+(produces `build\oled_aegis.pdb`) and attach a debugger (Visual Studio,
+raddbg) to the running process.
 
 ## Source Layout
 

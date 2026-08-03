@@ -14,6 +14,10 @@ Pure Win32 **C** (MSVC), no C++, no framework, no third-party runtime. Windows
 
 ## Build & run
 
+- **`oled_aegis.sln`** (Visual Studio 2022, x64, Debug/Release) — open and
+  press F5. The project mirrors the command-line build exactly (`INITGUID`
+  define, same libs, `.rc` compiled, output to `build\oled_aegis.exe`, PDB
+  produced in both configs).
 - **`build.bat`** — compile + link everything. Requires a Developer Command
   Prompt (vcvars). Output: `build/oled_aegis.exe`.
 - **`build.ps1 [release|debug]`** — locates VS itself, caches the MSVC env in
@@ -35,7 +39,7 @@ cross-module prototypes).
 | File | Responsibility |
 |---|---|
 | `src/oled_aegis.c` | `WinMain`, hidden main window (`OLEDAegisWindow`), `HandleCreation` (init), `HandleTimeout` (the idle-check timer state machine), tray icon, `WndProc` |
-| `src/screensaver.c` | The black windows (`OLEDAegisScreen`, one per monitor): show/hide, hide/minimize vetoes, topmost reassertion, watchdog, shell-window (Start Menu etc.) closing |
+| `src/screensaver.c` | The black windows (`OLEDAegisScreen`, one per monitor): show/hide, fade-to-black transition, hide/minimize vetoes, topmost reassertion, watchdog, shell-window (Start Menu etc.) closing |
 | `src/media.c` | Media detection: `ES_DISPLAY_REQUIRED` gate, WASAPI audio-session scan, window→monitor mapping. Owns the `DEFINE_GUID` blocks |
 | `src/monitors.c` | Monitor enumeration (GDI + DisplayConfig), owns `g_monitors`/`g_monitorStates`, lookup helpers |
 | `src/settings.c` | Settings dialog (hand-built controls, DPI-scaled), `ApplySettings` |
@@ -81,6 +85,14 @@ cross-module prototypes).
   `WM_STYLECHANGING` vetoes on the black windows, 5 s topmost reassert,
   watchdog that restores hidden/minimized/moved/cloaked windows, and a
   throttled pixel probe that verifies the screen is actually black.
+- **Fade-to-black transition** (`fadeDurationMs`, 0 = instant): when enabled,
+  black windows are layered (`WS_EX_LAYERED`) and their whole-window alpha is
+  animated by `UpdateFades` on a dedicated `TIMER_FADE` (~15 ms) via
+  `SetLayeredWindowAttributes` — activation fades 0→255 (desktop darkens to
+  black), deactivation fades 255→0 before hiding. Fades can be reversed
+  mid-flight (e.g. re-show during fade-out) from the current alpha, and the
+  watchdog's pixel probe is skipped while a fade is in progress since the
+  screen is legitimately not black yet.
 - **Pixel shift compensation**: black windows are expanded beyond monitor
   bounds by `pixelShiftCompensation` px (4–8 for QD-OLED panels).
 - **Persistence**: config in `%APPDATA%\OLED_Aegis\oled_aegis.ini`; monitors
@@ -125,9 +137,9 @@ cross-module prototypes).
 - **Audio-only apps** (Spotify, etc.) are intentionally excluded from media
   detection — music does not keep the display on; video does.
 
-## Testing
+## Testing & debugging
 
-1. `build.bat` (or `build.ps1`) from the project root.
+1. `build.bat` (or `build.ps1`, or the VS solution) from the project root.
 2. Run `build\oled_aegis.exe`; verify the tray icon appears (it switches
    between the active/inactive icons from `images/`) and the process stays
    alive.
@@ -136,6 +148,23 @@ cross-module prototypes).
    activation/deactivation and media-detection mask change.
 4. Manual activation: left-click the tray icon.
 5. Before rebuilding, kill the running instance or you'll hit `LNK1104`.
+
+### Breakpoint debugging (Visual Studio)
+
+- Open `oled_aegis.sln`, set the configuration to **Debug**, press **F5**.
+  The PDB is generated automatically; breakpoints bind directly in `src\`.
+- Key functions: `WinMain`/`HandleCreation` (startup), `HandleTimeout`
+  (every timer tick, default 1 s), `UpdateMediaMonitorStates` (media
+  detection), `ShowScreenSaverOnMonitor`/`HideScreenSaverOnMonitor`
+  (activation), `MonitorWindowProc` (black-window messages),
+  `VerifyScreenSaverWindows` (watchdog, throttled ~2 s).
+- Gotchas: kill any running instance first (single-instance mutex makes the
+  debugged copy exit with a message box). The app is timer-driven — lower the
+  idle timeout to 5 s or left-click the tray icon to trigger activation.
+  No console: use `LogMessage` (Debug Mode) or `OutputDebugStringA`.
+- Without the solution, alternatives: `build.ps1 debug` + attach to the
+  process, or `raddbg build\oled_aegis.exe`. Release builds made by
+  `build.bat`/`build.ps1` (without `debug`) have no PDB — no breakpoints.
 
 LSP (nvim/WSL) config lives in `.clangd` (uses xwin SDK headers; paths are
 machine-specific).

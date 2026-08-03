@@ -196,6 +196,19 @@ void ShowSettingsDialog() {
         SendMessage(hPixelShiftUpDown, UDM_SETRANGE, 0, MAKELPARAM(MAX_PIXEL_SHIFT_COMPENSATION, MIN_PIXEL_SHIFT_COMPENSATION));
         y += rowHeight + ScaleDPI(5);
 
+        HWND hFadeLabel = CreateWindowA("STATIC", "Fade Duration (ms):",
+                     WS_CHILD | WS_VISIBLE,
+                     margin, y, labelWidth, controlHeight, g_hSettingsDialog, NULL, hMod, NULL);
+        HWND hFadeEdit = CreateWindowExA(0, "EDIT", "",
+                     WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+                     margin + labelWidth, y, editWidth, controlHeight,
+                     g_hSettingsDialog, (HMENU)IDC_FADE_EDIT, hMod, NULL);
+        HWND hFadeUpDown = CreateWindowExA(0, UPDOWN_CLASS, "",
+                     WS_CHILD | WS_VISIBLE | UDS_AUTOBUDDY | UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS,
+                     0, 0, 0, 0, g_hSettingsDialog, NULL, hMod, hFadeEdit);
+        SendMessage(hFadeUpDown, UDM_SETRANGE, 0, MAKELPARAM(MAX_FADE_DURATION_MS, MIN_FADE_DURATION_MS));
+        y += rowHeight + ScaleDPI(5);
+
         HWND hVideoCheck = CreateWindowA("BUTTON", "Prevent Screen Saver During Media Playback",
                      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                      margin, y, checkboxWidth, controlHeight, g_hSettingsDialog, (HMENU)IDC_MEDIA_CHECK, hMod, NULL);
@@ -287,6 +300,9 @@ void ShowSettingsDialog() {
             SendMessageA(hPixelShiftLabel, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
             SendMessageA(hPixelShiftEdit, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
             SendMessageA(hPixelShiftUpDown, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
+            SendMessageA(hFadeLabel, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
+            SendMessageA(hFadeEdit, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
+            SendMessageA(hFadeUpDown, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
             SendMessageA(hMonitorsLabel, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
             SendMessageA(hApplyBtn, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
             SendMessageA(hConfigBtn, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
@@ -313,6 +329,9 @@ void ShowSettingsDialog() {
         AddTooltip(g_hSettingsDialog, hPixelShiftEdit,
                    "Expand the screen saver window beyond the monitor bounds by this many pixels on each side. "
                    "Use 4-8 on QD-OLED panels (e.g. Alienware) to prevent hardware pixel shift from exposing the desktop edge. (0 = disabled)");
+        AddTooltip(g_hSettingsDialog, hFadeEdit,
+                   "Duration of the fade-to-black transition when the screen saver activates, and the fade back when it hides. "
+                   "0 = instant (no fade). (0-3000ms)");
 
         // Set initial values
         char buffer[32];
@@ -331,6 +350,9 @@ void ShowSettingsDialog() {
 
         sprintf_s(buffer, 32, "%d", g_app.config.pixelShiftCompensation);
         SetDlgItemTextA(g_hSettingsDialog, IDC_PIXELSHIFT_EDIT, buffer);
+
+        sprintf_s(buffer, 32, "%d", g_app.config.fadeDurationMs);
+        SetDlgItemTextA(g_hSettingsDialog, IDC_FADE_EDIT, buffer);
 
         for (int i = 0; i < g_monitorCount; i++) {
             CheckDlgButton(g_hSettingsDialog, IDC_MONITOR_BASE + i, g_app.config.monitorsEnabled[i] ? BST_CHECKED : BST_UNCHECKED);
@@ -367,6 +389,9 @@ void ApplySettings(HWND hWnd) {
 
     GetDlgItemTextA(hWnd, IDC_PIXELSHIFT_EDIT, buffer, 32);
     g_app.config.pixelShiftCompensation = atoi(buffer);
+
+    GetDlgItemTextA(hWnd, IDC_FADE_EDIT, buffer, 32);
+    g_app.config.fadeDurationMs = atoi(buffer);
     ClampConfigValues();
 
     for (int i = 0; i < g_monitorCount; i++) {
@@ -402,7 +427,7 @@ void ApplySettings(HWND hWnd) {
     SaveConfig();
     UpdateStartupRegistry();
 
-    LogMessage("Settings applied: timeout %ds->%ds, interval %dms->%dms, media %d->%d, debug %d->%d, startup %d->%d, perMonitor %d->%d, perMonitorMedia %d->%d, mutedMedia %d->%d, pixelShift %dpx",
+    LogMessage("Settings applied: timeout %ds->%ds, interval %dms->%dms, media %d->%d, debug %d->%d, startup %d->%d, perMonitor %d->%d, perMonitorMedia %d->%d, mutedMedia %d->%d, pixelShift %dpx, fade %dms",
              oldTimeout, g_app.config.idleTimeout,
              oldInterval, g_app.config.checkInterval,
              oldMedia, g_app.config.mediaDetectionEnabled,
@@ -411,7 +436,8 @@ void ApplySettings(HWND hWnd) {
              oldPerMonitor, g_app.config.perMonitorInputDetection,
              oldPerMonitorMedia, g_app.config.perMonitorMediaDetection,
              oldBlockOnMutedMedia, g_app.config.blockOnMutedMedia,
-             g_app.config.pixelShiftCompensation);
+             g_app.config.pixelShiftCompensation,
+             g_app.config.fadeDurationMs);
 
     if (oldInterval != g_app.config.checkInterval) {
         KillTimer(g_app.hWnd, TIMER_IDLE_CHECK);

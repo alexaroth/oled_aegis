@@ -1,1 +1,5 @@
 build/
+
+# Visual Studio user-local files
+.vs/
+*.vcxproj.user

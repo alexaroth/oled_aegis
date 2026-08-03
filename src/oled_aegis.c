@@ -96,6 +96,7 @@ int HandleCreation(HWND hWnd) {
     g_app.config.perMonitorInputDetection = 0;
             g_app.config.perMonitorMediaDetection = 1;
             g_app.config.blockOnMutedMedia = 0;
+            g_app.config.fadeDurationMs = DEFAULT_FADE_DURATION_MS;
             for (int i = 0; i < MAX_MONITOR_COUNT; i++) {
         g_app.config.monitorsEnabled[i] = 1;
     }
@@ -434,6 +435,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             return HandleCreation(hWnd);
 
         case WM_TIMER:
+            if (wParam == TIMER_FADE) {
+                UpdateFades();
+                break;
+            }
             HandleTimeout(wParam);
             break;
 
@@ -454,6 +459,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     g_monitorStates[i].hScreenSaverWnd = NULL;
                 }
                 g_monitorStates[i].screenSaverActive = 0;
+                g_monitorStates[i].fadeActive = 0;
             }
             g_app.screenSaverActive = 0;
             UpdateTrayIcon(0);
@@ -472,6 +478,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             for (int i = 0; i < g_monitorCount; i++) {
                 g_monitorStates[i].lastInputTime = now;
                 g_monitorStates[i].screenSaverActive = 0;
+                g_monitorStates[i].fadeActive = 0;
                 g_monitorStates[i].enabled = g_app.config.monitorsEnabled[i];
                 g_monitorStates[i].hScreenSaverWnd = NULL;
                 g_monitorStates[i].mediaPauseOffsetMs = 0;
@@ -551,6 +558,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     g_monitorStates[i].hScreenSaverWnd = NULL;
                 }
                 g_monitorStates[i].screenSaverActive = 0;
+                g_monitorStates[i].fadeActive = 0;
             }
 
             Shell_NotifyIconA(NIM_DELETE, &g_app.nid);
