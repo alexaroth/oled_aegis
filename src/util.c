@@ -12,10 +12,9 @@ static int IsAppUiActive() {
     return g_app.trayMenuActive;
 }
 
-// Restore the cursor, handling ShowCursor's reference-counted nature. The
-// counter can drift if ShowCursor calls are missed (e.g. due to focus changes),
-// so we loop until the cursor is actually showing or we hit a safety bound.
-// Also checks GetCursorInfo as a fallback when the cursorHidden flag is wrong.
+// Restore the cursor. ShowCursor is reference-counted and its counter can
+// drift (e.g. on focus changes), so loop until visible or the safety bound.
+// GetCursorInfo is a fallback when the cursorHidden flag is wrong.
 void EnsureCursorVisible(const char* reason) {
     int adjusted = 0;
     int count = 0;

@@ -1,6 +1,6 @@
 # AGENTS.md — OLED Aegis
 
-Project instructions for AI agents and developers working on this repository.
+Project instructions for AI agents and developers working on this repository. User has 2 OLEDs and an IPS. One oled is primary monitor, second monitor is the IPS, and the third monitor is the secondary OLED. The user wants to prevent burn-in on the third monitor, the OLED.
 
 ## What this is
 
@@ -62,15 +62,32 @@ cross-module prototypes).
   2. WASAPI: enumerate default render endpoint sessions, keep processes whose
      session is `AudioSessionStateActive` **and** peak meter `> 0.0001f`
      (filters paused/silent sessions).
-  3. `EnumWindows`: visible, non-cloaked, non-tool windows whose process name
-     matches a known media player, or a known browser with a video-site title
-     hint; map window rect → monitors by overlap. Results cached 2 s; a 30 s
-     audio grace period prevents flicker during quiet passages.
+  3. `EnumWindows`: visible, non-cloaked, non-tool windows of audio-active
+     processes map their rect → monitors by overlap (title hints are
+     diagnostic only — the whitelist misses sites like Aniwave). Muted
+     candidates (visible browser/media windows with no audio) map only while
+     inside the 30 s audio grace window **and** their monitor's content is
+     moving (or a fullscreen foreground window covers it — the probe is
+     skipped there); a paused window is static, so it never wakes the screen
+     saver. Results cached 2 s.
+  4. Ambiguity: audible audio with >1 visible window of the audio-active
+     process can't be attributed per window (renderer PID ≠ window PID), so
+     the window mapping is dropped and a per-monitor motion probe decides:
+     a monitor counts as media only while its content moves (4×32×32 inset
+     blocks, 15 s grace, tolerant compare; probe frozen while the screen saver
+     covers the monitor, so the stale grace can't deactivate it; captures
+     skipped per-monitor under fullscreen windows of non-media processes — a
+     fullscreen browser/media player is sampled, covering videos muted from
+     the start and quiet scenes longer than the audio grace).
+     This keeps a paused tab on the OLED from blocking the screen saver while
+     playback is elsewhere, and keeps visibly-playing muted video from being
+     covered.
   - Browsers are matched **by exe name, not PID** (Chromium audio sessions
     belong to renderer processes; windows to the main process).
-  - Fallbacks: single browser window with audio → trust its rect; muted-media
-    candidates → map visible browser windows (only if `blockOnMutedMedia`);
+  - Fallbacks: single browser window with audible audio → trust its rect;
     unknown non-browser audio → block all enabled monitors (conservative).
+    No audible audio recently + nothing mapped → never block (ES_DISPLAY_REQUIRED
+    is a global flag any process can set — wake locks, OBS, stale flags).
 - **Modes** (all in `HandleTimeout`):
   - Global input + global media: all-on/all-off.
   - Global input + per-monitor media: per-monitor idle "pause" offsets
@@ -97,8 +114,14 @@ cross-module prototypes).
   bounds by `pixelShiftCompensation` px (4–8 for QD-OLED panels).
 - **Persistence**: config in `%APPDATA%\OLED_Aegis\oled_aegis.ini`; monitors
   keyed by persistent `monitorDevicePath` (legacy `monitor0=` and
-  `monitorEnabled_<GDI name>` keys still read for migration). No match →
-  enable primary monitor.
+  `monitorEnabled_<GDI name>` keys still read for migration). `LoadConfig`
+  resets enablement first, so monitors without an entry start disabled.
+  Entries seen in the file are remembered and re-emitted by `SaveConfig` even
+  when the monitor is currently disconnected, so a temporary disconnect (or an
+  Apply while unplugged) can't erase the saved selection. Fallback: only a
+  config with **no** monitor entries at all enables the primary monitor; if
+  entries exist but none match, nothing is enabled (configured monitors are
+  just disconnected) until the saved monitor returns.
 
 ## Conventions
 
@@ -108,13 +131,15 @@ cross-module prototypes).
   Owner modules: `g_app`, `g_blackBrush`, `g_hIconActive/Inactive` →
   `oled_aegis.c`; `g_hSettingsDialog` → `settings.c`; `g_monitorCount`,
   `g_monitors`, `g_monitorStates` → `monitors.c`; `g_logFile` → `logging.c`.
+- **Max line length: 170 chars** (code and comments). Wrap long lines.
+- Comments should be **concise** (typically a few lines, never paragraphs) but
+  must still explain *why* — especially hard-won bug history. If a comment
+  needs more than ~6 lines, say it in fewer.
 - `LogMessage(...)` is the debug facility (gated by `debugMode`); keep
   existing log lines' wording/format stable — the user greps them for
   diagnostics. Log file: `%APPDATA%\OLED_Aegis\oled_aegis_debug.log`.
 - Resource IDs must match `src/oled_aegis.rc` (icons 101/102); dialog control
   IDs start at 1001, monitor checkboxes at `IDC_MONITOR_BASE + index`.
-- Comments in this codebase are detailed and intentional (they explain *why*,
-  often with hard-won bug history). Preserve them when editing.
 
 ## Gotchas
 

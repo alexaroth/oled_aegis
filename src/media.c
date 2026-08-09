@@ -149,6 +149,39 @@ static int IsKnownMediaProcess(const char* processName) {
     );
 }
 
+// Known AUDIO-ONLY (music/podcast) applications. These play sound but never
+// need the display kept on, so they must not block the screen saver on any
+// monitor. Their audible audio is also not evidence of video playback, so it
+// must not trigger the "unknown audio -> block everything" fallback in
+// UpdateMediaMonitorStates (which would otherwise wake an idle OLED on another
+// monitor when music is paused or unpaused elsewhere).
+static int IsKnownAudioOnlyProcess(const char* processName) {
+    static const char* const audioOnlyProcesses[] = {
+        "spotify.exe",
+        "itunes.exe",
+        "music.exe",           // Apple Music for Windows
+        "foobar2000.exe",
+        "winamp.exe",
+        "musicbee.exe",
+        "deezer.exe",
+        "tidal.exe",
+        "qobuz.exe",
+        "amazon music.exe",
+        "youtube music.exe",
+        "groove music.exe",
+        "mediamonkey.exe",
+        "clementine.exe",
+        "strawberry.exe",
+        "audacious.exe"
+    };
+
+    return ProcessNameMatchesAny(
+        processName,
+        audioOnlyProcesses,
+        (int)(sizeof(audioOnlyProcesses) / sizeof(audioOnlyProcesses[0]))
+    );
+}
+
 // Title hints for VIDEO playback sites. Audio-only services (Spotify,
 // SoundCloud, Bandcamp, Apple Music) are excluded since music does not keep
 // the display on. "YouTube Music" is covered by the "YouTube" hint.
@@ -191,6 +224,10 @@ static int WindowTitleHasMediaHint(const char* title) {
 // Returns 1 if the (processName, title) pair looks like a media-playing window,
 // 0 otherwise. Known media players always count; browsers count only with a
 // video-site title hint; any other process counts only with a title hint.
+//
+// NOTE: for audible browser audio this is diagnostic only (see
+// EnumMediaWindowCallback): the hint whitelist misses sites (e.g. Aniwave), so
+// every visible window of an audio-active browser process maps regardless.
 static int IsMediaCandidateWindow(const char* processName, const char* title) {
     if (IsKnownMediaProcess(processName)) {
         return 1;
@@ -252,14 +289,21 @@ typedef struct {
     int mediaOnMonitor[MAX_MONITOR_COUNT];
     char audioActiveProcessNames[MAX_ACTIVE_AUDIO_PIDS][MAX_PATH];
     int audioActiveProcessNameCount;
-    // Diagnostic info: all browser windows with active audio, collected during
-    // enumeration and logged once in UpdateMediaMonitorStates when the mask changes.
-    // This avoids per-tick log spam and shows both matching and non-matching windows.
+    // Diagnostic info for the mask-change log: which browser windows were
+    // examined, their hint status, and rects (rects also map hint-less media).
     char browserTitles[MAX_BROWSER_WINDOW_INFO][256];
-    int browserMatched[MAX_BROWSER_WINDOW_INFO];  // 1 = matched a hint, 0 = no hint
+    int browserMatched[MAX_BROWSER_WINDOW_INFO];  // 1 = hint matched, 0 = no hint (diagnostic only)
+    int browserMapped[MAX_BROWSER_WINDOW_INFO];   // 1 = window was mapped as media, 0 = skipped
     RECT browserRects[MAX_BROWSER_WINDOW_INFO];   // window rects, used to map media to monitors without title hints
     int browserWindowCount;
-    int mutedMediaOnMonitor[MAX_MONITOR_COUNT];    // Monitors hosting visible browser/media-player windows with no audible audio (muted-media candidates, e.g. YouTube hover previews)
+    int audibleMappedWindowCount;  // Windows mapped via audible audio (ambiguity check)
+    // Rects of visible media windows with no audible audio (muted-media
+    // candidates, e.g. YouTube hover previews). Kept per window so the muted
+    // mapping can be gated on per-monitor motion: a paused window must not
+    // block the screen saver (its site wake lock keeps ES_DISPLAY_REQUIRED
+    // set, but static content here means nothing is playing here).
+    RECT mutedRects[MAX_BROWSER_WINDOW_INFO];
+    int mutedRectCount;
 } MediaEnumContext;
 
 static int IsAudioActiveProcessName(const MediaEnumContext* ctx, const char* processName) {
@@ -283,6 +327,22 @@ static int AllAudioActiveAreBrowsers(const MediaEnumContext* ctx) {
     if (ctx->audioActiveProcessNameCount == 0) return 0;
     for (int i = 0; i < ctx->audioActiveProcessNameCount; i++) {
         if (!IsKnownBrowserProcess(ctx->audioActiveProcessNames[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// Returns 1 if every audio-active process is a known audio-only app (music/
+// podcast). Used to skip the block-all fallback: audio-only apps never need
+// the display on and their windows are deliberately not mapped as media (see
+// IsKnownMediaProcess), so audible music alone must not block the screen
+// saver - including waking an idle OLED on another monitor when playback is
+// started or stopped. Mirrors the browser handling above.
+static int AllAudioActiveAreAudioOnly(const MediaEnumContext* ctx) {
+    if (ctx->audioActiveProcessNameCount == 0) return 0;
+    for (int i = 0; i < ctx->audioActiveProcessNameCount; i++) {
+        if (!IsKnownAudioOnlyProcess(ctx->audioActiveProcessNames[i])) {
             return 0;
         }
     }
@@ -347,9 +407,11 @@ static int CollectActiveAudioProcessNames(char names[][MAX_PATH], int maxNames) 
             IAudioMeterInformation* pMeter = NULL;
             if (SUCCEEDED(pControl->lpVtbl->QueryInterface(pControl, &IID_IAudioMeterInformation, (void**)&pMeter)) && pMeter) {
                 float peak = 0.0f;
-                if (SUCCEEDED(pMeter->lpVtbl->GetPeakValue(pMeter, &peak)) && peak > AUDIO_ACTIVE_PEAK_THRESHOLD) {
+                if (SUCCEEDED(pMeter->lpVtbl->GetPeakValue(pMeter, &peak)) &&
+                    peak > AUDIO_ACTIVE_PEAK_THRESHOLD) {
                     IAudioSessionControl2* pControl2 = NULL;
-                    if (SUCCEEDED(pControl->lpVtbl->QueryInterface(pControl, &IID_IAudioSessionControl2, (void**)&pControl2)) && pControl2) {
+                    if (SUCCEEDED(pControl->lpVtbl->QueryInterface(pControl, &IID_IAudioSessionControl2,
+                                                                   (void**)&pControl2)) && pControl2) {
                         DWORD pid = 0;
                         if (SUCCEEDED(pControl2->lpVtbl->GetProcessId(pControl2, &pid)) && pid != 0) {
                             char procName[MAX_PATH] = {0};
@@ -472,18 +534,15 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam) {
 
     int isAudioActive = IsAudioActiveProcessName(ctx, processName);
 
-    // A window only counts as media if its process is actually emitting audio.
-    // We match by exe name (not PID) because Chromium browsers run multi-process:
-    // the audio session belongs to the renderer process, while the window belongs
-    // to the main process both share the same exe name. This also handles
-    // single-process players (VLC, mpv) where name match == PID match.
+    // A window counts as media if its process is actually emitting audio. We
+    // match by exe name (not PID): Chromium audio sessions belong to renderer
+    // processes, windows to the main process; both share the exe name. This
+    // also handles single-process players (VLC, mpv).
     //
-    // Exception: when the user opted in to blocking muted media, visible
-    // browser/media-player windows with NO audible audio are still collected as
-    // muted-media candidates (mutedMediaOnMonitor[]) - e.g. YouTube's
-    // hover-preview autoplay plays muted video with no audio session. The caller
-    // maps muted media to those monitors instead of blocking every enabled
-    // monitor.
+    // Exception: with blockOnMutedMedia, visible browser/media windows with NO
+    // audible audio are also collected as muted-media candidates
+    // (mutedRects[]) - e.g. YouTube's hover-preview autoplay plays muted video
+    // with no audio session.
     int isMutedCandidate = !isAudioActive &&
                            (IsKnownBrowserProcess(processName) || IsKnownMediaProcess(processName)) &&
                            g_app.config.blockOnMutedMedia;
@@ -495,13 +554,20 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam) {
     char title[512] = {0};
     GetWindowTextA(hWnd, title, sizeof(title));
 
-    int matched;
+    // Muted candidates count outright: the visible window IS the media.
+    int matched = 1;
+    int hintMatched = 1;  // Title-hint result, for the diagnostic log only
     if (isAudioActive) {
-        matched = IsMediaCandidateWindow(processName, title);
-    } else {
-        // Muted-media candidate: treat the visible browser/media-player window
-        // itself as the media location.
-        matched = 1;
+        // Multi-process browser audio belongs to renderer PIDs, so it can't be
+        // attributed to a window; the hint whitelist also misses sites (e.g.
+        // Aniwave), letting the screen saver cover a playing video. Map every
+        // visible window of an audio-active process; the hint stays diagnostic.
+        hintMatched = IsMediaCandidateWindow(processName, title);
+        if (!IsKnownBrowserProcess(processName)) {
+            // Non-browser apps keep the old rule: hint (or the global fallback)
+            // still required.
+            matched = hintMatched;
+        }
     }
 
     // Collect diagnostic info for all browser windows considered (audio-active
@@ -511,7 +577,8 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam) {
         int idx = ctx->browserWindowCount++;
         strncpy(ctx->browserTitles[idx], title, 255);
         ctx->browserTitles[idx][255] = '\0';
-        ctx->browserMatched[idx] = matched;
+        ctx->browserMatched[idx] = hintMatched;
+        ctx->browserMapped[idx] = matched;
         ctx->browserRects[idx] = rect;
     }
 
@@ -520,9 +587,10 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam) {
     }
 
     if (isAudioActive) {
+        ctx->audibleMappedWindowCount++;
         MarkMediaWindowMonitors(ctx->mediaOnMonitor, &rect);
-    } else {
-        MarkMediaWindowMonitors(ctx->mutedMediaOnMonitor, &rect);
+    } else if (ctx->mutedRectCount < MAX_BROWSER_WINDOW_INFO) {
+        ctx->mutedRects[ctx->mutedRectCount++] = rect;
     }
     return TRUE;
 }
@@ -531,6 +599,139 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam) {
 // scan, since WASAPI sessions and ES_DISPLAY_REQUIRED state may be stale.
 void ResetMediaDetectionCache() {
     g_mediaCacheInvalidated = 1;
+}
+
+// --- Per-monitor motion probe ---
+//
+// When audible audio can't be attributed to one window (multiple visible
+// windows of the same audio-active process), the window mapping can't tell a
+// paused tab on the OLED from a playing one. Sampling the monitor's content
+// does: a monitor counts as media only while its content is moving.
+// MOTION_GRACE_MS keeps the flag while content briefly holds still (quiet
+// scenes, letterboxing).
+//
+// While the black screen saver window is up (or fading) sampling is frozen:
+// the previous sample stays the last pre-saver desktop frame, so the first
+// comparison after dismissal sees the real current desktop - a paused video
+// then yields no motion (fast sleep), a playing one yields motion immediately
+// (no dim/undim race). The stale grace must also not apply while the black
+// window is up, or it would deactivate the screen saver it just covered.
+#define MOTION_REGION_COUNT 4
+#define MOTION_REGION_SIZE 32
+#define MOTION_GRACE_MS 15000
+#define MOTION_PIXELS (MOTION_REGION_SIZE * MOTION_REGION_SIZE)
+
+static BYTE g_motionPrev[MAX_MONITOR_COUNT][MOTION_REGION_COUNT][MOTION_PIXELS * 4];
+static DWORD g_motionLastTick[MAX_MONITOR_COUNT];
+
+// Sample 4 inset 32x32 blocks of the monitor; returns 1 when the content
+// changed since the previous sample (moving content). The comparison is
+// tolerant (>=8/255 on >=3% of pixels) so cursor blinks, clock ticks and DWM
+// noise don't count, while real video changes massively. captureFails counts
+// regions whose capture failed. Call once per media scan.
+static int UpdateMonitorMotion(int monitorIndex, int* captureFails) {
+    RECT mr = g_monitors[monitorIndex].rect;
+    int w = mr.right - mr.left;
+    int h = mr.bottom - mr.top;
+    if (w < MOTION_REGION_SIZE * 2 || h < MOTION_REGION_SIZE * 2) return 0;
+
+    HDC hdcScreen = GetDC(NULL);
+    if (!hdcScreen) return 0;
+
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    HBITMAP hbm = CreateCompatibleBitmap(hdcScreen, MOTION_REGION_SIZE, MOTION_REGION_SIZE);
+    int diff = 0;
+    if (hdcMem && hbm) {
+        HGDIOBJ hOld = SelectObject(hdcMem, hbm);
+        // Quarter-point anchors, inset from the edges (taskbar/clock strips).
+        int ax[4] = { w / 4, 3 * w / 4, w / 4, 3 * w / 4 };
+        int ay[4] = { h / 4, h / 4, 3 * h / 4, 3 * h / 4 };
+        for (int r = 0; r < MOTION_REGION_COUNT; r++) {
+            int x = mr.left + ax[r] - MOTION_REGION_SIZE / 2;
+            int y = mr.top + ay[r] - MOTION_REGION_SIZE / 2;
+            if (!BitBlt(hdcMem, 0, 0, MOTION_REGION_SIZE, MOTION_REGION_SIZE,
+                        hdcScreen, x, y, SRCCOPY)) {
+                if (captureFails) (*captureFails)++;
+                continue;
+            }
+            BITMAPINFO bmi = {0};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = MOTION_REGION_SIZE;
+            bmi.bmiHeader.biHeight = -MOTION_REGION_SIZE;  // top-down
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biSizeImage = MOTION_PIXELS * 4;
+            BYTE cur[MOTION_PIXELS * 4];
+            if (GetDIBits(hdcMem, hbm, 0, MOTION_REGION_SIZE, cur, &bmi, DIB_RGB_COLORS) == MOTION_REGION_SIZE) {
+                const BYTE* a = cur;
+                const BYTE* b = g_motionPrev[monitorIndex][r];
+                int changedPixels = 0;
+                for (int p = 0; p < MOTION_PIXELS; p++) {
+                    int d0 = (int)a[0] - (int)b[0]; if (d0 < 0) d0 = -d0;
+                    int d1 = (int)a[1] - (int)b[1]; if (d1 < 0) d1 = -d1;
+                    int d2 = (int)a[2] - (int)b[2]; if (d2 < 0) d2 = -d2;
+                    if (d0 >= 8 || d1 >= 8 || d2 >= 8) changedPixels++;
+                    a += 4;
+                    b += 4;
+                }
+                if (changedPixels >= MOTION_PIXELS / 32) {
+                    diff = 1;
+                }
+                memcpy(g_motionPrev[monitorIndex][r], cur, sizeof(cur));
+            } else if (captureFails) {
+                (*captureFails)++;
+            }
+        }
+        SelectObject(hdcMem, hOld);
+    }
+    if (hbm) DeleteObject(hbm);
+    if (hdcMem) DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+
+    if (diff) {
+        g_motionLastTick[monitorIndex] = GetTickCount();
+        return 1;
+    }
+    return 0;
+}
+
+// Returns 1 when the foreground window covers >=95% of the monitor (fullscreen
+// game/video). Screen-DC capture during fullscreen-optimized rendering can
+// cause a brief hitch, so the motion probe is skipped then - the same guard
+// the watchdog's pixel probe uses.
+static int IsForegroundFullscreenOnMonitor(int monitorIndex) {
+    HWND hFg = GetForegroundWindow();
+    if (!hFg) return 0;
+    RECT fr;
+    if (!GetWindowRect(hFg, &fr)) return 0;
+
+    RECT mr = g_monitors[monitorIndex].rect;
+    LONG il = fr.left   > mr.left   ? fr.left   : mr.left;
+    LONG it = fr.top    > mr.top    ? fr.top    : mr.top;
+    LONG ir = fr.right  < mr.right  ? fr.right  : mr.right;
+    LONG ib = fr.bottom < mr.bottom ? fr.bottom : mr.bottom;
+    if (ir <= il || ib <= it) return 0;
+
+    LONGLONG covered = (LONGLONG)(ir - il) * (ib - it);
+    LONGLONG monArea = (LONGLONG)(mr.right - mr.left) * (mr.bottom - mr.top);
+    return monArea > 0 && covered * 100 >= monArea * FULLSCREEN_FOREGROUND_MIN_COVERAGE_PCT;
+}
+
+// Returns 1 when the foreground window belongs to a known browser or media
+// player. The motion probe's fullscreen skip guards screen-DC capture against
+// hitches from fullscreen-optimized rendering (games/unknown apps); browsers
+// and media players cover the monitor with plain windows, so they can (and
+// must) be sampled - otherwise a video muted from the start, or in a quiet
+// scene longer than the audio grace, would lose its mapping once the grace
+// expires and the screen saver would cover the playing video.
+static int IsForegroundMediaProcess(void) {
+    HWND hFg = GetForegroundWindow();
+    if (!hFg) return 0;
+
+    char processName[MAX_PATH] = {0};
+    if (!GetProcessNameFromHwnd(hFg, processName, sizeof(processName))) return 0;
+
+    return IsKnownBrowserProcess(processName) || IsKnownMediaProcess(processName);
 }
 
 // Fills mediaOnMonitor[] with 1 for each monitor hosting a visible media window.
@@ -595,6 +796,7 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT]) {
 
     int localMediaOnMonitor[MAX_MONITOR_COUNT] = {0};
     MediaEnumContext ctx = {0};
+    int inAudioGrace = 0;  // No audio this scan, but inside the post-audio grace window
     ctx.audioActiveProcessNameCount = CollectActiveAudioProcessNames(
         ctx.audioActiveProcessNames, MAX_ACTIVE_AUDIO_PIDS);
 
@@ -602,29 +804,13 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT]) {
         lastAudioDetectedTick = nowTick;
     } else if (hasCachedState && cachedAnyMedia &&
                (DWORD)(nowTick - lastAudioDetectedTick) < AUDIO_GRACE_PERIOD_MS) {
-        // Audio was detected recently but this scan found no audible audio.
-        // This happens during quiet passages in video audio where the peak
-        // meter momentarily drops below threshold. Keep the previous media
-        // state to avoid flickering the screen saver on and off.
-        for (int i = 0; i < MAX_MONITOR_COUNT; i++) {
-            mediaOnMonitor[i] = cachedMediaOnMonitor[i];
-        }
-        hasCachedState = 1;
-        cachedAnyMedia = 1;
+        // Quiet passage (peak meter dipped). Still run the window scan below:
+        // the old early return here kept the mapping stale for up to 30s after
+        // the video moved monitors. The cached mask is only kept when the fresh
+        // scan maps nothing (video minimized) - the anti-flicker case this
+        // grace exists for.
+        inAudioGrace = 1;
         lastScanTick = nowTick;
-
-        DWORD mask = 0;
-        for (int i = 0; i < g_monitorCount && i < 32; i++) {
-            if (mediaOnMonitor[i]) {
-                mask |= (1u << i);
-            }
-        }
-        if (mask != lastLoggedMask) {
-            LogMessage("Media monitor detection: mask=0x%08X (grace period, %lums since last audio)",
-                       mask, (unsigned long)(nowTick - lastAudioDetectedTick));
-            lastLoggedMask = mask;
-        }
-        return 1;
     }
 
     EnumWindows(EnumMediaWindowCallback, (LPARAM)&ctx);
@@ -638,14 +824,15 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT]) {
         }
     }
 
-    // No window title hinted at video, but exactly one visible browser window
-    // has active audio. That window must be where the audio is coming from (a
-    // browser's audio session can't belong to a window that doesn't exist), so
-    // trust its position instead of falling back to blocking all enabled
-    // monitors. This fixes autoplaying videos on sites with no video hint in
-    // the tab title (e.g. Reddit), where the old code deactivated the screen
-    // saver on every enabled monitor even though the video was elsewhere.
-    if (mappedMonitorCount == 0 && ctx.browserWindowCount == 1) {
+    // Exactly one visible browser window while audio is AUDIBLE: it must be
+    // the source (an audio session can't belong to a window that doesn't
+    // exist), so trust its rect instead of the block-all fallback (fixes
+    // hint-less autoplay sites like Reddit). Gated on audio: with no audio the
+    // window is just a paused/muted candidate, and mapping it here would keep
+    // the screen saver off forever (site wake locks keep ES_DISPLAY_REQUIRED
+    // set while paused).
+    if (mappedMonitorCount == 0 && ctx.browserWindowCount == 1 &&
+        ctx.audioActiveProcessNameCount > 0) {
         MarkMediaWindowMonitors(ctx.mediaOnMonitor, &ctx.browserRects[0]);
         for (int i = 0; i < g_monitorCount; i++) {
             if (ctx.mediaOnMonitor[i]) {
@@ -656,80 +843,164 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT]) {
         }
     }
 
+    // Ambiguity: audible audio with more than one visible window of the
+    // audio-active process(es). Multi-process browsers can't attribute audio
+    // to a window (renderer PID != window PID), so a window sitting on a
+    // monitor doesn't mean that monitor is playing - a paused tab on the OLED
+    // would keep the screen saver off while the actual playback is elsewhere.
+    // Drop the window mapping; the per-monitor motion probe below decides.
+    // Monitors fully covered by the foreground window keep their mapping: a
+    // fullscreen video/game there is unambiguous watching, and the probe is
+    // skipped during fullscreen anyway.
+    int clearFired = 0;
+    if (ctx.audioActiveProcessNameCount > 0 && ctx.audibleMappedWindowCount > 1) {
+        clearFired = 1;
+        for (int i = 0; i < g_monitorCount; i++) {
+            if (IsForegroundFullscreenOnMonitor(i)) continue;
+            mediaOnMonitor[i] = 0;
+        }
+    }
+
+    // Motion supplement: a monitor whose content is moving counts as media
+    // even without a window mapping (muted playback, or ambiguous multi-window
+    // audio - see the ambiguity clear above). While the black screen saver
+    // window is up (or fading) the probe is frozen and the grace does not
+    // apply: the stale grace must not deactivate the screen saver it just
+    // covered (that was the dim/undim cycle). Sampling is also skipped on
+    // monitors a fullscreen window of a non-media process covers (screen
+    // capture can hitch fullscreen-optimized game rendering) - per monitor,
+    // so a maximized window on one monitor can't disable detection on the
+    // others. A fullscreen browser/media player is sampled: it is a plain
+    // window, and without the probe a video muted from the start (or in a
+    // quiet scene longer than the audio grace) would get covered.
+    int motionDiff[MAX_MONITOR_COUNT] = {0};
+    int motionFails[MAX_MONITOR_COUNT] = {0};
+    DWORD motionAge[MAX_MONITOR_COUNT];
+    int fgMediaProcess = IsForegroundMediaProcess();
+    for (int i = 0; i < g_monitorCount; i++) {
+        motionAge[i] = 0xFFFFFFFFu;
+        if (IsForegroundFullscreenOnMonitor(i) && !fgMediaProcess) {
+            continue;  // fullscreen game/unknown app: probe skipped (capture hitch)
+        }
+        HWND hSaver = g_monitorStates[i].hScreenSaverWnd;
+        if (hSaver && IsWindowVisible(hSaver)) {
+            continue;  // black window up/fading: probe frozen, no grace
+        }
+        motionDiff[i] = UpdateMonitorMotion(i, &motionFails[i]);
+        // Fresh GetTickCount(): lastTick was just set mid-scan when a diff was
+        // found, so the scan-start nowTick minus it would wrap and the fresh
+        // motion would fail the grace check below.
+        motionAge[i] = GetTickCount() - g_motionLastTick[i];
+        if (motionAge[i] < MOTION_GRACE_MS) {
+            mediaOnMonitor[i] = 1;
+        }
+    }
+
     int usedGlobalFallback = 0;
     int usedMutedMapping = 0;
     int skippedFallbackForBrowser = 0;
+    int skippedFallbackForAudioOnly = 0;
     int skippedFallbackForNoAudio = 0;
+    int usedCachedMask = 0;
+    int canUseMutedMapping = 0;
     if (mappedMonitorCount == 0) {
-        // No media window was mapped from audible audio. If ES_DISPLAY_REQUIRED
-        // is set, the media may be MUTED - e.g. YouTube's hover-preview autoplay
-        // plays muted video with no audio session. Visible browser/media-player
-        // windows are the best evidence of where the media is, so map to their
-        // monitors instead of blocking every enabled monitor (which would
-        // deactivate the screen saver on unused monitors).
-        int canUseMutedMapping = 0;
+        // Nothing mapped from audible audio. If ES_DISPLAY_REQUIRED is set the
+        // media may be MUTED (e.g. YouTube hover-preview autoplay has no audio
+        // session): visible browser/media windows are candidates. They are not
+        // mapped here - the gated mapping below runs after the motion probe
+        // and only counts a monitor while its content moves, so a paused
+        // window can't block the screen saver (the paused video's site wake
+        // lock keeps ES_DISPLAY_REQUIRED set, but static content here means
+        // nothing is playing here).
         if (ctx.audioActiveProcessNameCount == 0) {
-            canUseMutedMapping = g_app.config.blockOnMutedMedia;
+            // Candidates only count inside the grace window; otherwise a
+            // paused video blocks the screen saver forever.
+            canUseMutedMapping = inAudioGrace && g_app.config.blockOnMutedMedia;
         } else if (!AllAudioActiveAreBrowsers(&ctx)) {
             // Non-browser audio (e.g. Discord voice chat) doesn't explain
             // ES_DISPLAY_REQUIRED; the media is likely a muted preview in a
             // visible browser. Mapping beats the blanket block-all.
             canUseMutedMapping = 1;
         }
+    }
 
-        if (canUseMutedMapping) {
-            for (int i = 0; i < g_monitorCount; i++) {
-                if (ctx.mutedMediaOnMonitor[i]) {
-                    mediaOnMonitor[i] = 1;
-                    mappedMonitorCount++;
-                }
+    // Muted-media mapping, gated on the motion probe just run. A visible
+    // browser/media window with no audible audio is only evidence of playback
+    // while its monitor's content moves (muted video, hover previews); a
+    // paused window is static, so it must not wake the screen saver - pausing
+    // a video elsewhere leaves its site wake lock set, and the old rect-only
+    // mapping then deactivated the OLED that a paused browser window sat on.
+    // Monitors fully covered by the foreground window are probe-skipped, so
+    // their windows map outright: a fullscreen muted video is unambiguous.
+    if (mappedMonitorCount == 0 && canUseMutedMapping) {
+        int mutedOnMonitor[MAX_MONITOR_COUNT] = {0};
+        for (int w = 0; w < ctx.mutedRectCount; w++) {
+            MarkMediaWindowMonitors(mutedOnMonitor, &ctx.mutedRects[w]);
+        }
+        for (int i = 0; i < g_monitorCount; i++) {
+            if (!mutedOnMonitor[i] || mediaOnMonitor[i]) {
+                continue;
             }
-            if (mappedMonitorCount > 0) {
-                usedMutedMapping = 1;
+            if (IsForegroundFullscreenOnMonitor(i) || motionAge[i] < MOTION_GRACE_MS) {
+                mediaOnMonitor[i] = 1;
+                mappedMonitorCount++;
             }
         }
+        if (mappedMonitorCount > 0) {
+            usedMutedMapping = 1;
+        }
+    }
 
-        if (mappedMonitorCount == 0) {
-            if (ctx.audioActiveProcessNameCount == 0) {
-            // ES_DISPLAY_REQUIRED is set but no audible audio is detected on the
-            // default render endpoint. This happens with muted video, OBS replay
-            // buffer, or other apps that call SetThreadExecutionState without
-            // producing audio.
-            if (g_app.config.blockOnMutedMedia) {
-                // User opted in to blocking on muted/silent media. Conservatively
-                // block all enabled monitors.
-                for (int i = 0; i < g_monitorCount; i++) {
-                    if (g_monitorStates[i].enabled) {
-                        mediaOnMonitor[i] = 1;
-                    }
+    if (mappedMonitorCount == 0) {
+        if (inAudioGrace) {
+            // Fresh scan mapped nothing inside the grace window (video
+            // minimized/closed during a quiet passage): keep the cached
+            // mapping so the screen saver doesn't flicker. Moves are not
+            // this case - a moved window maps in the fresh scan above. Union
+            // (not overwrite): the motion probe and muted mapping above may
+            // have already flagged monitors with fresh evidence.
+            for (int i = 0; i < MAX_MONITOR_COUNT; i++) {
+                if (!mediaOnMonitor[i]) {
+                    mediaOnMonitor[i] = cachedMediaOnMonitor[i];
                 }
-                usedGlobalFallback = 1;
-            } else {
-                // No audible media is playing, let the screen saver activate.
-                skippedFallbackForNoAudio = 1;
-                LogMessage("Media detection: ES_DISPLAY_REQUIRED set but no audible audio detected: skipping fallback");
             }
+            usedCachedMask = 1;
+        } else if (ctx.audioActiveProcessNameCount == 0) {
+            // ES_DISPLAY_REQUIRED set with no audible audio and nothing
+            // mapped (no window, or grace expired). The flag is global -
+            // any process can set it (site wake locks, OBS replay buffer,
+            // stale flags) - so without recent audio there's no evidence
+            // of playback: let the screen saver activate.
+            skippedFallbackForNoAudio = 1;
+            LogMessage("Media detection: no audible audio recently and nothing mapped: skipping fallback");
         } else if (AllAudioActiveAreBrowsers(&ctx)) {
-            // All audio-active processes are known browsers, but no window title
-            // matched a video hint. This typically means video is playing in a
-            // background tab - the window title shows the active tab, not the
-            // playing one. We can't determine which monitor is playing, so
-            // rather than blocking all monitors (which would defeat per-monitor
-            // detection), we skip the fallback and let the screen saver activate.
-            // The user can always move the mouse to dismiss it if needed.
+            // All audio-active processes are known browsers but nothing
+            // mapped: with the per-window mapping in EnumMediaWindowCallback,
+            // this can only happen when no visible (unminimized, uncloaked)
+            // browser window exists - e.g. the playing tab's window is
+            // minimized. Nothing visible to protect, so skip the fallback
+            // and let the screen saver activate.
             skippedFallbackForBrowser = 1;
-            LogMessage("Media detection: no title hint match, all audio-active processes are browsers: skipping fallback");
+            LogMessage("Media detection: no visible browser window, all audio-active processes are browsers: skipping fallback");
+        } else if (AllAudioActiveAreAudioOnly(&ctx)) {
+            // Every audio-active process is a known audio-only app (music/
+            // podcast). Audio never needs the display on and audio-only
+            // windows are deliberately not mapped as media, so audible music
+            // must not block the screen saver - including the block-all
+            // fallback that would otherwise wake an idle OLED on another
+            // monitor when music is paused or unpaused there.
+            skippedFallbackForAudioOnly = 1;
+            LogMessage("Media detection: all audio-active processes are known audio-only apps: skipping fallback");
         } else {
-            // Non-browser audio (unknown app, media player with minimized window,
-            // audio on non-default device). Conservatively block all enabled
-            // monitors to avoid covering playback.
+            // Non-browser audio (unknown app, media player with minimized
+            // window, audio on non-default device). Conservatively block
+            // all enabled monitors to avoid covering playback.
             for (int i = 0; i < g_monitorCount; i++) {
                 if (g_monitorStates[i].enabled) {
                     mediaOnMonitor[i] = 1;
                 }
             }
             usedGlobalFallback = 1;
-            }
         }
     }
 
@@ -748,15 +1019,23 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT]) {
 
     if (mask != lastLoggedMask) {
         for (int i = 0; i < ctx.browserWindowCount; i++) {
-            LogMessage("Media detection: browser window %s: '%.120s'",
-                       ctx.browserMatched[i] ? "MATCHED  " : "no hint  ",
+            LogMessage("Media detection: browser window %s (hint: %s): '%.120s'",
+                       ctx.browserMapped[i] ? "MAPPED" : "SKIPPED",
+                       ctx.browserMatched[i] ? "MATCHED" : "no hint",
                        ctx.browserTitles[i]);
         }
         for (int i = 0; i < ctx.audioActiveProcessNameCount; i++) {
             LogMessage("Media detection: active audio process: %s", ctx.audioActiveProcessNames[i]);
         }
-        LogMessage("Media monitor detection: mask=0x%08X (activeAudioNames=%d, fallback=%d, mutedMap=%d, browserSkip=%d, noAudioSkip=%d, browserWindows=%d)",
-                   mask, ctx.audioActiveProcessNameCount, usedGlobalFallback, usedMutedMapping, skippedFallbackForBrowser, skippedFallbackForNoAudio, ctx.browserWindowCount);
+        LogMessage("Media monitor detection: mask=0x%08X (activeAudioNames=%d, fallback=%d, mutedMap=%d, "
+                   "browserSkip=%d, audioOnlySkip=%d, noAudioSkip=%d, browserWindows=%d, graceKeep=%d, "
+                   "clear=%d, motion=[%d %d %d] fails=[%d %d %d] age=[%u %u %u])",
+                   mask, ctx.audioActiveProcessNameCount, usedGlobalFallback, usedMutedMapping,
+                   skippedFallbackForBrowser, skippedFallbackForAudioOnly, skippedFallbackForNoAudio,
+                   ctx.browserWindowCount, usedCachedMask, clearFired,
+                   motionDiff[0], motionDiff[1], motionDiff[2],
+                   motionFails[0], motionFails[1], motionFails[2],
+                   motionAge[0], motionAge[1], motionAge[2]);
         lastLoggedMask = mask;
     }
 

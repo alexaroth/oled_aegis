@@ -1,7 +1,6 @@
 // settings.c - Settings dialog UI: layout, tooltips, DPI scaling,
 // ApplySettings. Owns the dialog window and font handles.
-//
-// Part of OLED Aegis. See oled_aegis.h for the shared types/constants.
+// Part of OLED Aegis. See oled_aegis.h for shared types/constants.
 
 #include "oled_aegis.h"
 
@@ -323,9 +322,11 @@ void ShowSettingsDialog() {
         AddTooltip(g_hSettingsDialog, hPerMonitorCheck,
                    "Track input separately for each monitor. Allows screen saver to activate on unused monitors while you continue using others.");
         AddTooltip(g_hSettingsDialog, hPerMonitorMediaCheck,
-                   "Detect media playback per monitor instead of globally. Only blocks the screen saver on the monitor where media is actually playing, so playback on a non-OLED display won't keep the OLED awake.");
+                   "Detect media playback per monitor instead of globally. "
+                   "Only blocks the screen saver on the monitor where media is actually playing, so playback on a non-OLED display won't keep the OLED awake.");
         AddTooltip(g_hSettingsDialog, hMutedMediaCheck,
-                   "Block the screen saver even when media is muted or inaudible (e.g. muted video, OBS replay buffer). When off, only audible media prevents the screen saver.");
+                   "Block the screen saver even when media is muted or inaudible (e.g. muted video, OBS replay buffer). "
+                   "When off, only audible media prevents the screen saver.");
         AddTooltip(g_hSettingsDialog, hPixelShiftEdit,
                    "Expand the screen saver window beyond the monitor bounds by this many pixels on each side. "
                    "Use 4-8 on QD-OLED panels (e.g. Alienware) to prevent hardware pixel shift from exposing the desktop edge. (0 = disabled)");
@@ -427,7 +428,9 @@ void ApplySettings(HWND hWnd) {
     SaveConfig();
     UpdateStartupRegistry();
 
-    LogMessage("Settings applied: timeout %ds->%ds, interval %dms->%dms, media %d->%d, debug %d->%d, startup %d->%d, perMonitor %d->%d, perMonitorMedia %d->%d, mutedMedia %d->%d, pixelShift %dpx, fade %dms",
+    LogMessage("Settings applied: timeout %ds->%ds, interval %dms->%dms, media %d->%d, debug %d->%d, "
+               "startup %d->%d, perMonitor %d->%d, perMonitorMedia %d->%d, mutedMedia %d->%d, "
+               "pixelShift %dpx, fade %dms",
              oldTimeout, g_app.config.idleTimeout,
              oldInterval, g_app.config.checkInterval,
              oldMedia, g_app.config.mediaDetectionEnabled,

@@ -8,20 +8,12 @@
 
 // --- Fade-to-black transition support ---
 //
-// When fadeDurationMs > 0 the black windows are created layered
-// (WS_EX_LAYERED) and their whole-window alpha is animated with
-// SetLayeredWindowAttributes: on activation the window starts fully
-// transparent (the desktop shows through) and darkens to solid black, and on
-// deactivation it lightens back to the desktop before being hidden. The
-// animation steps on the main window's TIMER_FADE timer (see UpdateFades).
-// While a fade is in progress the window is made click-through
-// (WS_EX_TRANSPARENT), because a layered window animated with whole-window
-// alpha is still hit-tested over its entire rect even when fully
-// transparent and would otherwise swallow clicks aimed at the desktop
-// content being revealed or covered. The style is removed once the window
-// is fully opaque again so clicks dismiss the screen saver as usual.
-// With fadeDurationMs == 0 the windows stay plain opaque black and are shown/
-// hidden instantly, exactly as before.
+// With fadeDurationMs > 0 windows are layered and their whole-window alpha
+// animates on TIMER_FADE (see UpdateFades). While fading, the window is
+// click-through (WS_EX_TRANSPARENT): layered windows are hit-tested over
+// their whole rect even at alpha 0 and would swallow clicks meant for the
+// desktop, so the style is removed once fully opaque. With fadeDurationMs
+// == 0 the windows stay plain opaque black and show/hide instantly.
 
 // Current alpha of a monitor's window, computed from its in-flight fade
 // (used to reverse a fade instead of flashing). 255 when not fading.
@@ -38,12 +30,10 @@ static BYTE GetMonitorCurrentAlpha(int monitorIndex) {
 }
 
 // Make (or stop making) the monitor window click-through. While a fade runs
-// the window is not fully opaque, but layered windows animated via
-// SetLayeredWindowAttributes are still hit-tested over their whole rect, so
-// the fading window would swallow clicks meant for the content below.
-// WS_EX_TRANSPARENT makes the system skip the window during hit testing so
-// mouse messages reach the window underneath (returning HTTRANSPARENT from
-// WM_NCHITTEST only reliably reroutes to windows of the same thread).
+// the window isn't fully opaque, but layered windows are still hit-tested
+// over their whole rect and would swallow clicks meant for the content
+// below. WS_EX_TRANSPARENT skips the window during hit testing
+// (HTTRANSPARENT from WM_NCHITTEST only reroutes within the same thread).
 static void SetMonitorWindowClickThrough(HWND hWnd, BOOL clickThrough) {
     LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
     LONG_PTR newStyle = clickThrough ? (exStyle | WS_EX_TRANSPARENT)
@@ -68,10 +58,9 @@ static void StartMonitorFade(int monitorIndex, BYTE fromAlpha, BYTE toAlpha) {
     SetTimer(g_app.hWnd, TIMER_FADE, FADE_TIMER_INTERVAL_MS, NULL);
 }
 
-// Called from the main window's WM_TIMER (TIMER_FADE): step every fading
-// monitor window's alpha toward its target, finalizing transitions when
-// they complete (hiding the window after a fade-out) and killing the timer
-// once nothing is fading.
+// WM_TIMER (TIMER_FADE) handler: step every fading window's alpha toward
+// its target, finalize when complete (hide after fade-out), and kill the
+// timer once nothing is fading.
 void UpdateFades() {
     int anyFading = 0;
     for (int i = 0; i < g_monitorCount; i++) {
@@ -94,16 +83,14 @@ void UpdateFades() {
         if (t >= 1.0f) {
             st->fadeActive = 0;
             if (st->fadeToAlpha == 0) {
-                // Fade-out complete: the desktop is fully revealed, so hide
-                // the window and reset the alpha so a later show starts
-                // opaque again.
+                // Fade-out complete: hide the window and reset alpha so a later show starts opaque.
                 ShowWindow(st->hScreenSaverWnd, SW_HIDE);
                 SetLayeredWindowAttributes(st->hScreenSaverWnd, 0, 255, LWA_ALPHA);
                 SetMonitorWindowClickThrough(st->hScreenSaverWnd, FALSE);
                 LogMessage("Fade-out complete on monitor %d", i);
             } else {
-                // Fade-in complete: the window is fully opaque again, so it
-                // must capture clicks again (to dismiss the screen saver).
+                // Fade-in complete: window fully opaque, so it must capture
+                // clicks again (to dismiss the screen saver).
                 SetMonitorWindowClickThrough(st->hScreenSaverWnd, FALSE);
                 LogMessage("Fade-in complete on monitor %d", i);
             }
@@ -139,10 +126,8 @@ LRESULT CALLBACK MonitorWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
         case WM_WINDOWPOSCHANGING:
         {
             // The shell can externally hide topmost windows while showing
-            // taskbar thumbnail previews (hovering over a taskbar icon).
-            // While this monitor's screen saver is supposed to be active,
-            // veto hide attempts so the black screen can't vanish without
-            // the app knowing ("hidden but still active").
+            // taskbar thumbnail previews; veto hide attempts while the
+            // screen saver is active so it can't vanish unnoticed.
             WINDOWPOS* wpos = (WINDOWPOS*)lParam;
             int isActive = 0;
             for (int i = 0; i < g_monitorCount; i++) {
@@ -211,22 +196,19 @@ LRESULT CALLBACK MonitorWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
 void HideScreenSaverOnMonitor(int monitorIndex) {
     if (monitorIndex < 0 || monitorIndex >= g_monitorCount) return;
 
-    // Clear the active state BEFORE hiding the window: while a monitor is
-    // active, MonitorWindowProc vetoes external hide/minimize attempts, and
-    // our own SW_HIDE must not be blocked by that veto.
+    // Clear active state BEFORE hiding: while active, MonitorWindowProc
+    // vetoes hide/minimize, and our own SW_HIDE must not be blocked.
     g_monitorStates[monitorIndex].screenSaverActive = 0;
 
     HWND hWnd = g_monitorStates[monitorIndex].hScreenSaverWnd;
 
-    // Fade-out: animate the window's alpha back to transparent (gradually
-    // revealing the desktop), then hide it once the fade completes in
-    // UpdateFades. This makes the black screen recede smoothly instead of
-    // vanishing instantly.
+    // Fade-out: animate alpha back to transparent (revealing the desktop),
+    // then hide once the fade completes in UpdateFades, so the black screen
+    // recedes smoothly instead of vanishing instantly.
     if (g_app.config.fadeDurationMs > 0 && hWnd && IsWindowVisible(hWnd)) {
         if (g_monitorStates[monitorIndex].fadeActive) {
             if (g_monitorStates[monitorIndex].fadeToAlpha == 255) {
-                // A fade-in was in progress: reverse it from the current
-                // alpha instead of abruptly hiding the still-visible window.
+                // Fade-in in progress: reverse it from the current alpha instead of abruptly hiding.
                 StartMonitorFade(monitorIndex, GetMonitorCurrentAlpha(monitorIndex), 0);
             }
             // Already fading out: leave the running fade alone.
@@ -271,11 +253,9 @@ int IsShellWindowOpen() {
 
     int shellWindowCount = 0;
 
-    // Check for known shell host processes
-    // ShellExperienceHost.exe - Start Menu, Action Center on Windows 11
-    // SearchHost.exe - Windows Search/Start Menu
-    // StartMenuExperienceHost.exe - Start Menu on Windows 10
-    // ShellHost.exe - Action Center / Control Center on Windows 11
+    // Known shell host processes: ShellExperienceHost.exe (Start Menu,
+    // Action Center), SearchHost.exe (Search), StartMenuExperienceHost.exe
+    // (Win10 Start Menu), ShellHost.exe (Action/Control Center).
     if (_stricmp(processName, "ShellExperienceHost.exe") == 0 ||
         _stricmp(processName, "SearchHost.exe") == 0 ||
         _stricmp(processName, "StartMenuExperienceHost.exe") == 0 ||
@@ -285,9 +265,8 @@ int IsShellWindowOpen() {
         shellWindowCount = 1;
     }
 
-    // Additional check: Task View is hosted by explorer.exe with specific window classes
+    // Task View lives in explorer.exe with these window classes:
     if (_stricmp(processName, "explorer.exe") == 0) {
-        // Task View uses Windows.UI.Core.CoreWindow or XamlExplorerHostIslandWindow
         if (strstr(className, "Windows.UI.Core.CoreWindow") != NULL ||
             strstr(className, "XamlExplorerHostIslandWindow") != NULL) {
 
@@ -358,12 +337,11 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
             }
 
             if (sentEscapeKeys) {
-                // The Escape keys sent via SendInput update GetLastInputInfo,
-                // which would make the next timer tick think the user is active
-                // and deactivate the screen saver. Use the manual-activation
-                // cooldown to suppress deactivation for a short period, instead
-                // of resetting lastInputTime (which would also deactivate the
-                // monitor we just activated).
+                // SendInput Escape keys update GetLastInputInfo, so the next
+                // timer tick would think the user is active and deactivate
+                // the screen saver. Use the manual-activation cooldown to
+                // suppress that instead of resetting lastInputTime (which
+                // would also deactivate the monitor we just activated).
                 g_app.isManualActivation = 1;
                 g_app.manualActivationTime = GetTickCount();
             }
@@ -389,28 +367,24 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
     }
 
     if (g_monitorStates[monitorIndex].hScreenSaverWnd) {
-        // Reposition and resize in case the pixel shift compensation setting changed since the
-        // window was last created.
+        // Reposition/resize in case the pixel shift compensation changed since creation.
         LONG_PTR exStyle = GetWindowLongPtrW(g_monitorStates[monitorIndex].hScreenSaverWnd, GWL_EXSTYLE);
         if ((exStyle & WS_EX_NOACTIVATE) == 0) {
             SetWindowLongPtrW(g_monitorStates[monitorIndex].hScreenSaverWnd, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE);
         }
         // Fade-to-black: make the window layered and fully transparent
-        // before it becomes visible so no solid-black frame can flash; the
-        // fade helpers below then darken it gradually. Skipped when a fade
-        // is already running (a fade-out being reversed below starts from
-        // the window's current alpha instead).
+        // before it becomes visible so no solid-black frame can flash.
+        // Skipped when a fade is already running (a fade-out being reversed
+        // below starts from the window's current alpha instead).
         if (g_app.config.fadeDurationMs > 0 && !g_monitorStates[monitorIndex].fadeActive) {
-            // Re-fetch the style: the NOACTIVATE fix-up above may have just
-            // changed it, and this SetWindowLongPtrW must not drop that flag.
+            // Re-fetch the style: the NOACTIVATE fix-up above may have just changed it; don't drop it.
             exStyle = GetWindowLongPtrW(g_monitorStates[monitorIndex].hScreenSaverWnd, GWL_EXSTYLE);
             if ((exStyle & WS_EX_LAYERED) == 0) {
                 SetWindowLongPtrW(g_monitorStates[monitorIndex].hScreenSaverWnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
             }
             SetLayeredWindowAttributes(g_monitorStates[monitorIndex].hScreenSaverWnd, 0, 0, LWA_ALPHA);
         }
-        // Never let Aero Peek (e.g. hovering a taskbar thumbnail preview)
-        // make the black screen transparent/invisible.
+        // Never let Aero Peek (taskbar thumbnail previews) make the black screen transparent/invisible.
         BOOL excludeFromPeek = TRUE;
         DwmSetWindowAttribute(g_monitorStates[monitorIndex].hScreenSaverWnd, DWMWA_EXCLUDED_FROM_PEEK, &excludeFromPeek, sizeof(excludeFromPeek));
         int pad = g_app.config.pixelShiftCompensation;
@@ -425,9 +399,9 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
         g_monitorStates[monitorIndex].screenSaverActive = 1;
         LogMessage("Screen saver window shown on monitor %d (reused)", monitorIndex);
     } else {
-        // Expand the window beyond the monitor's reported bounds by the pixel shift compensation
-        // amount on all four sides. This ensures hardware pixel shift (used by some OLED panels
-        // to reduce burn-in) cannot expose the desktop behind the screen saver window.
+        // Expand beyond the monitor's reported bounds by the pixel shift
+        // compensation so hardware pixel shift (OLED burn-in mitigation)
+        // can't expose the desktop behind the screen saver.
         int pad = g_app.config.pixelShiftCompensation;
         // When fading is enabled the window is layered from birth so the
         // fade-in can begin fully transparent; the alpha is set before the
@@ -446,8 +420,7 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
                                    NULL, NULL, GetModuleHandle(NULL), NULL);
 
         if (hWnd) {
-            // Never let Aero Peek (e.g. hovering a taskbar thumbnail preview)
-            // make the black screen transparent/invisible.
+            // Never let Aero Peek (taskbar thumbnail previews) make the black screen transparent/invisible.
             BOOL excludeFromPeek = TRUE;
             DwmSetWindowAttribute(hWnd, DWMWA_EXCLUDED_FROM_PEEK, &excludeFromPeek, sizeof(excludeFromPeek));
 
@@ -463,10 +436,9 @@ void ShowScreenSaverOnMonitor(int monitorIndex, int isManual) {
         }
     }
 
-    // Fade-to-black transition: start the alpha animation. If a fade was
-    // already in progress (e.g. a fade-out interrupted by reactivation),
-    // reverse it from the current alpha instead of flashing back to
-    // transparent.
+    // Start the alpha animation; if a fade is already running (e.g. a
+    // fade-out interrupted by reactivation), reverse it from the current
+    // alpha instead of flashing.
     if (g_app.config.fadeDurationMs > 0 && g_monitorStates[monitorIndex].hScreenSaverWnd) {
         if (g_monitorStates[monitorIndex].fadeActive) {
             StartMonitorFade(monitorIndex, GetMonitorCurrentAlpha(monitorIndex), 255);
@@ -556,11 +528,10 @@ void HideScreenSaver() {
     EnsureCursorVisible("screen saver hidden");
 }
 
-// Returns 1 if hWnd is a taskbar/shell overlay window (the taskbar itself,
-// thumbnail previews shown when hovering over taskbar icons, flyouts). These
-// windows sit above the screen saver while the user hovers over the taskbar,
-// and reasserting topmost would cover the hovered preview, so they are left
-// alone by EnsureScreenSaverTopmost.
+// Returns 1 if hWnd is a taskbar/shell overlay window (taskbar, thumbnail
+// previews, flyouts). These sit above the screen saver while hovered, and
+// reasserting topmost would cover the preview, so EnsureScreenSaverTopmost
+// leaves them alone.
 int IsShellOverlayWindow(HWND hWnd) {
     if (!hWnd) return 0;
     char className[256] = {0};
@@ -585,12 +556,10 @@ void EnsureScreenSaverTopmost() {
     }
 }
 
-// Backstop for external interference with the screen saver windows (e.g. the
-// shell hiding or minimizing them while showing taskbar thumbnail previews).
-// The WM_WINDOWPOSCHANGING/WM_STYLECHANGING vetoes in MonitorWindowProc block
-// most attempts; this check catches anything that slipped through (DWM
-// cloaking, moves, etc.), restores the window, and logs what happened so the
-// cause can be identified.
+// Backstop for external interference (shell hiding/minimizing windows while
+// showing taskbar thumbnail previews). The vetoes in MonitorWindowProc
+// block most attempts; this catches what slipped through (DWM cloaking,
+// moves, etc.), restores the window, and logs it so the cause can be found.
 void VerifyScreenSaverWindows() {
     for (int i = 0; i < g_monitorCount; i++) {
         HWND hWnd = g_monitorStates[i].hScreenSaverWnd;
@@ -639,9 +608,9 @@ void VerifyScreenSaverWindows() {
             }
         }
 
-        // Log z-order changes: a new window appearing directly above the
-        // screen saver (e.g. the taskbar thumbnail preview) is the prime
-        // suspect when the black screen "vanishes" without any state change.
+        // Log z-order changes: a new window directly above the screen saver
+        // (e.g. taskbar thumbnail preview) is the prime suspect when the
+        // black screen "vanishes" without any state change.
         static HWND lastAboveWindow[MAX_MONITOR_COUNT] = {0};
         HWND hAbove = GetWindow(hWnd, GW_HWNDPREV);
         if (hAbove != lastAboveWindow[i]) {
@@ -662,31 +631,25 @@ void VerifyScreenSaverWindows() {
         }
 
         // While a fade is in progress the screen is legitimately not fully
-        // black yet, so skip the pixel probe until the transition completes
-        // (the probe block is the last thing in this loop, so continue is
-        // enough to skip it for this monitor).
+        // black yet, so skip the pixel probe until the transition completes.
         if (g_monitorStates[i].fadeActive) {
             continue;
         }
 
         // Pixel probe: the screen saver paints solid black, so sampling the
-        // center of the monitor tells us whether the user can actually SEE
-        // the black screen. This catches DWM-level hiding (Aero Peek, etc.)
-        // that no window flag can detect. Throttled to every ~2 seconds.
+        // monitor center tells whether the user can actually SEE the black
+        // screen — catches DWM-level hiding (Aero Peek) no window flag can
+        // detect. Throttled to ~2 seconds.
         static DWORD lastProbeTick = 0;
         DWORD nowTick = GetTickCount();
         if ((DWORD)(nowTick - lastProbeTick) >= 2000) {
             lastProbeTick = nowTick;
 
-            // Skip the probe while a fullscreen window is in the foreground
-            // (e.g. a game on another monitor): GDI screen capture during
-            // fullscreen-optimized rendering can cause a brief hitch, and a
-            // game legitimately showing non-black content would trigger a
-            // pointless restore attempt over it. Matched with tolerance:
-            // borderless-windowed games often report a rect a few pixels off
-            // the monitor bounds (or sized to the work area), which the old
-            // exact-contains test missed and would keep probing (and risking
-            // a hitch) while gaming.
+            // Skip the probe while a fullscreen window is in the foreground (e.g. a game on another
+            // monitor): GDI capture during fullscreen-optimized rendering can hitch, and a game
+            // showing non-black content would trigger a pointless restore. Matched with tolerance
+            // because borderless games often report a rect a few pixels off the monitor bounds —
+            // the old exact-contains test kept probing (and risking a hitch) while gaming.
             HWND hFg = GetForegroundWindow();
             int fullscreenForeground = 0;
             if (hFg) {

@@ -75,5 +75,3 @@ void LogMessage(const char* format, ...) {
         va_end(args);
     }
 }
-
-// Get monitor friendly name and device path using DisplayConfig API

@@ -61,7 +61,7 @@ static int GetMonitorIdentifiers(const char* gdiDeviceName,
             continue;
         }
 
-        // Found matching source, now get target (monitor) info
+        // Found matching source; get target (monitor) info
         DISPLAYCONFIG_TARGET_DEVICE_NAME targetName = {0};
         targetName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
         targetName.header.size = sizeof(targetName);

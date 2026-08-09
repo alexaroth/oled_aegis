@@ -1,9 +1,18 @@
-// config.c - Settings persistence: oled_aegis.ini load/save, value
-// clamping, startup registry entry, and opening the config file location.
-//
+// config.c - Settings persistence: oled_aegis.ini load/save, value clamping,
+// startup registry entry, and opening the config location.
 // Part of OLED Aegis. See oled_aegis.h for the shared types/constants.
 
 #include "oled_aegis.h"
+
+// Settings for monitors that were in the config file are remembered so a
+// SaveConfig while a monitor is temporarily disconnected (e.g. an OLED unplugged
+// and re-plugged) doesn't erase its saved selection: SaveConfig re-emits entries
+// for known-but-absent monitors.
+#define MAX_KNOWN_MONITORS (MAX_MONITOR_COUNT * 4)
+#define KNOWN_PATH_MAX 256  // Must hold monitorDevicePath (char[256])
+static char g_knownMonitorPaths[MAX_KNOWN_MONITORS][KNOWN_PATH_MAX];
+static int g_knownMonitorEnabled[MAX_KNOWN_MONITORS];
+static int g_knownMonitorCount = 0;
 
 static int ClampInt(int value, int minValue, int maxValue) {
     if (value < minValue) return minValue;
@@ -41,6 +50,23 @@ int ConfigFileExists() {
     return 0;
 }
 
+// Record a monitorEnabled_<path> entry seen in the config file so its setting
+// survives while the monitor is disconnected (see SaveConfig).
+static void RememberMonitorSetting(const char* devicePath, int enabled) {
+    for (int i = 0; i < g_knownMonitorCount; i++) {
+        if (strcmp(g_knownMonitorPaths[i], devicePath) == 0) {
+            g_knownMonitorEnabled[i] = enabled;
+            return;
+        }
+    }
+    if (g_knownMonitorCount < MAX_KNOWN_MONITORS) {
+        strncpy(g_knownMonitorPaths[g_knownMonitorCount], devicePath, KNOWN_PATH_MAX - 1);
+        g_knownMonitorPaths[g_knownMonitorCount][KNOWN_PATH_MAX - 1] = '\0';
+        g_knownMonitorEnabled[g_knownMonitorCount] = enabled;
+        g_knownMonitorCount++;
+    }
+}
+
 void LoadConfig() {
     char appDataPath[MAX_PATH];
     char configPath[MAX_PATH];
@@ -49,12 +75,21 @@ void LoadConfig() {
 
     g_app.config.monitorCount = g_monitorCount;
 
+    // Reset enablement so monitors without a config entry start disabled;
+    // otherwise stale values from a previous enumeration (or the enable-all
+    // default in HandleCreation) leak through, and a reconnected monitor would
+    // come back enabled even though the user disabled it.
+    for (int i = 0; i < MAX_MONITOR_COUNT; i++) {
+        g_app.config.monitorsEnabled[i] = 0;
+    }
+    g_knownMonitorCount = 0;
+
     int hadMonitorConfig = 0;  // Track if we found any monitor config entries
     int anyMonitorMatched = 0; // Track if any monitor config matched current monitors
 
     FILE* f = fopen(configPath, "r");
     if (f) {
-        char line[512];  // Increased buffer size for longer device paths
+        char line[512];  // Large enough for long device paths
         while (fgets(line, sizeof(line), f)) {
             // Strip inline comments (everything after ';')
             char* comment = strchr(line, ';');
@@ -66,7 +101,7 @@ void LoadConfig() {
                 line[--len] = '\0';
             }
 
-            char key[300], value[64];  // Increased key size for device paths
+            char key[300], value[64];  // Large enough for device path keys
             if (sscanf(line, "%299[^=]=%63s", key, value) == 2) {
                 if (strcmp(key, "idleTimeout") == 0) {
                     g_app.config.idleTimeout = atoi(value);
@@ -93,6 +128,10 @@ void LoadConfig() {
                 } else if (strncmp(key, "monitorEnabled_", 15) == 0) {
                     const char* identifier = key + 15;
                     hadMonitorConfig = 1;
+
+                    // Remember this entry even if the monitor is absent right
+                    // now, so SaveConfig can re-emit it later (see SaveConfig).
+                    RememberMonitorSetting(identifier, atoi(value));
 
                     // Try matching by device path first (new format)
                     int idx = FindMonitorByDevicePath(identifier);
@@ -127,15 +166,22 @@ void LoadConfig() {
         fclose(f);
     }
 
-    // Fallback: if we had monitor config but none matched, enable the primary monitor
-    // This handles the case where display configuration changed (monitors unplugged/replugged)
-    if (hadMonitorConfig && !anyMonitorMatched) {
+    // Fallback: only a config with no monitor entries at all (pre-monitor-config
+    // era) gets the primary monitor enabled, matching the historical default.
+    // If entries exist but none match, the configured monitors are simply
+    // disconnected: enable nothing, so a temporary disconnect doesn't silently
+    // take over the remaining displays. The saved selection (remembered above)
+    // is restored when the monitor returns.
+    if (!hadMonitorConfig) {
         int primaryIdx = FindPrimaryMonitorIndex();
         if (primaryIdx >= 0) {
             g_app.config.monitorsEnabled[primaryIdx] = 1;
-            LogMessage("Config fallback: no monitors matched saved config, enabled primary monitor %d (%s)",
+            LogMessage("Config fallback: no monitor entries in config, enabled primary monitor %d (%s)",
                       primaryIdx, g_monitors[primaryIdx].friendlyName);
         }
+    } else if (!anyMonitorMatched) {
+        LogMessage("Config: monitor entries present but none matched (%d monitors) - nothing enabled",
+                  g_monitorCount);
     }
 
     ClampConfigValues();
@@ -159,12 +205,27 @@ void SaveConfig() {
         fprintf(f, "blockOnMutedMedia=%d\n", g_app.config.blockOnMutedMedia);
         fprintf(f, "pixelShiftCompensation=%d\n", g_app.config.pixelShiftCompensation);
         fprintf(f, "fadeDurationMs=%d\n", g_app.config.fadeDurationMs);
-        // Save monitor settings using persistent device path as key, with comment showing friendly name
+        // Save monitor settings keyed by device path, with friendly name in comment
         for (int i = 0; i < g_monitorCount; i++) {
             fprintf(f, "monitorEnabled_%s=%d ; %s\n",
                     g_monitors[i].monitorDevicePath,
                     g_app.config.monitorsEnabled[i],
                     g_monitors[i].displayName);
+        }
+        // Re-emit entries for known monitors that aren't connected right now,
+        // so an Apply while a monitor is unplugged doesn't erase its selection.
+        for (int i = 0; i < g_knownMonitorCount; i++) {
+            int connected = 0;
+            for (int j = 0; j < g_monitorCount; j++) {
+                if (strcmp(g_knownMonitorPaths[i], g_monitors[j].monitorDevicePath) == 0) {
+                    connected = 1;
+                    break;
+                }
+            }
+            if (!connected) {
+                fprintf(f, "monitorEnabled_%s=%d ; not connected\n",
+                        g_knownMonitorPaths[i], g_knownMonitorEnabled[i]);
+            }
         }
         fclose(f);
     }

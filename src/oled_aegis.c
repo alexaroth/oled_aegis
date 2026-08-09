@@ -13,11 +13,10 @@ HICON g_hIconActive = NULL;
 HICON g_hIconInactive = NULL;
 static UINT g_uTaskbarRestart = 0;  // Registered "TaskbarCreated" message ID (0 if not registered)
 
-// Idle-countdown "pause" bookkeeping: while media plays, the elapsed playback
-// time is excluded from the idle calculation, so stopping playback does not
-// immediately trigger the screen saver. Per-monitor offsets are used in mixed
-// mode (global input + per-monitor media); the global offset is used in plain
-// global mode. Both are cleared as soon as real user input is detected.
+// Idle-countdown "pause" bookkeeping: elapsed playback time is excluded from
+// the idle calculation, so stopping playback doesn't fire the screen saver
+// immediately. Per-monitor offsets are used in mixed mode, the global offset
+// in plain global mode; both are cleared on real user input.
 static DWORD g_mediaPauseOffsetMs = 0;
 static DWORD g_lastTimerTickMs = 0;  // GetTickCount() of the previous timer tick
 
@@ -149,10 +148,9 @@ void HandleTimeout(WPARAM wParam) {
         return;
     }
 
-    // Media-pause bookkeeping (shared by all modes below):
-    //   Track the time elapsed since the previous tick and the raw Windows
-    //   idle time. Real user input restarts Windows' idle counter, so any
-    //   accumulated media-pause offset no longer applies and is cleared.
+    // Media-pause bookkeeping (shared by all modes): deltaSinceLastTick is the
+    // time since the previous tick, rawIdleTime is Windows' idle counter. Real
+    // input restarts that counter, so accumulated pause offsets are cleared.
     DWORD nowTick = GetTickCount();
     DWORD deltaSinceLastTick = (g_lastTimerTickMs != 0) ? (nowTick - g_lastTimerTickMs) : 0;
     g_lastTimerTickMs = nowTick;
@@ -165,12 +163,10 @@ void HandleTimeout(WPARAM wParam) {
         }
     }
 
-    // Per-monitor input detection mode:
-    //   Each monitor has its own idle timer, updated by tracking cursor position
-    //   and focused-window location. This lets the screen saver activate on
-    //   unused monitors while the user continues working on others. Media is
-    //   checked per-monitor (if perMonitorMediaDetection is on) or globally.
-    //   Each monitor's screen saver is activated/deactivated independently.
+    // Per-monitor input detection mode: each monitor has its own idle timer
+    // (cursor position + focused-window location), so the saver can activate on
+    // unused monitors while the user works on others. Media is checked per-
+    // monitor (if perMonitorMediaDetection is on) or globally.
     if (g_app.config.perMonitorInputDetection) {
         DWORD idleTime = rawIdleTime;
         time_t now = time(NULL);
@@ -232,8 +228,8 @@ void HandleTimeout(WPARAM wParam) {
 
             if (monitorHasMedia) {
                 // Pause this monitor's idle countdown while media plays on it:
-                // the countdown resumes from (nearly) zero when playback stops
-                // instead of firing the screen saver immediately.
+                // stopping playback resumes from (nearly) zero instead of
+                // firing the screen saver immediately.
                 g_monitorStates[i].lastInputTime = now;
             }
 
@@ -274,27 +270,21 @@ void HandleTimeout(WPARAM wParam) {
 
         UpdateTrayIcon(IsAnyMonitorActive() ? 1 : 0);
     } else {
-        // Global input detection mode:
-        //   A single idle timer (GetIdleTime) covers all monitors. When per-
-        //   monitor media detection is on, each monitor is still activated/
-        //   deactivated independently based on whether media is playing on it,
-        //   but idle time is global. Without per-monitor media, the original
-        //   all-on/all-off behavior is used.
+        // Global input detection mode: a single GetIdleTime timer covers all
+        // monitors. With per-monitor media on, each monitor still activates/
+        // deactivates independently, but idle time is global. Without it, the
+        // original all-on/all-off behavior is used.
         if (g_app.config.perMonitorMediaDetection && g_app.config.mediaDetectionEnabled) {
-            // Per-monitor media with global input:
-            //   Each monitor's idle countdown is "paused" while media plays on
-            //   it (playback time is excluded from that monitor's idle
-            //   calculation). When a monitor's paused-adjusted idle time is
-            //   beyond the timeout, activate its screen saver if no media is
-            //   playing there, or deactivate it if media is detected. Fresh
-            //   input deactivates everything (preserving the manual-activation
-            //   cooldown logic).
+            // Per-monitor media with global input: each monitor's countdown is
+            // paused while media plays on it. Past the timeout, activate if no
+            // media is playing there, deactivate if media is detected. Fresh
+            // input deactivates everything (preserving manual-activation
+            // cooldown).
             int mediaOnMonitor[MAX_MONITOR_COUNT] = {0};
             UpdateMediaMonitorStates(mediaOnMonitor);
 
-            // Pause the countdown on monitors with media: accumulate elapsed
-            // time while media plays, clamped so the effective idle time can
-            // never go negative.
+            // Pause countdowns on media monitors: accumulate elapsed time,
+            // clamped so the effective idle time never goes negative.
             if (rawIdleTime >= IDLE_ACTIVITY_THRESHOLD_MS) {
                 for (int i = 0; i < g_monitorCount; i++) {
                     if (!mediaOnMonitor[i]) continue;
@@ -322,9 +312,8 @@ void HandleTimeout(WPARAM wParam) {
                         ShowScreenSaverOnMonitor(i, 0);
                     }
                 } else if (g_monitorStates[i].screenSaverActive) {
-                    // Below the timeout: only fresh input can have brought the
-                    // countdown down (input clears the pause offsets), so
-                    // deactivate (preserving the manual-activation cooldown).
+                    // Below the timeout: only fresh input can have lowered the
+                    // countdown (input clears pause offsets), so deactivate.
                     if (g_app.isManualActivation) {
                         DWORD timeSinceActivation = GetTickCount() - g_app.manualActivationTime;
                         if (timeSinceActivation < MANUAL_ACTIVATION_COOLDOWN_MS) {
@@ -349,18 +338,15 @@ void HandleTimeout(WPARAM wParam) {
 
             UpdateTrayIcon(g_app.screenSaverActive);
         } else {
-            // Original global behavior:
-            //   When the paused-adjusted idle time is beyond the timeout and no
-            //   media is playing, activate the screen saver on all enabled
-            //   monitors at once. Media playback pauses the countdown, so
-            //   stopping playback resumes it from where it left off instead of
-            //   firing immediately. When the user is active or media starts
-            //   playing, deactivate everything. Manual-activation cooldown
-            //   logic is preserved.
+            // Original global behavior: past the timeout with no media playing,
+            // activate the saver on all enabled monitors at once. Media pauses
+            // the countdown, so stopping playback resumes it from where it left
+            // off instead of firing immediately. Active input or media
+            // deactivates everything; manual-activation cooldown is preserved.
             int mediaPlaying = IsMediaPlaying();
 
-            // Pause the countdown while media plays: accumulate the elapsed
-            // time, clamped so the effective idle time never goes negative.
+            // Pause the countdown while media plays: accumulate elapsed time,
+            // clamped so the effective idle time never goes negative.
             if (mediaPlaying && rawIdleTime >= IDLE_ACTIVITY_THRESHOLD_MS) {
                 g_mediaPauseOffsetMs += deltaSinceLastTick;
                 if (g_mediaPauseOffsetMs > rawIdleTime) {
@@ -400,9 +386,9 @@ void HandleTimeout(WPARAM wParam) {
         }
     }
 
-    // Ensure screen saver windows stay on top (handles notifications like MS
-    // Teams, Steam friends, etc.), but throttle to avoid a SetWindowPos call
-    // every timer tick.
+    // Keep screen saver windows on top (notifications like MS Teams, Steam
+    // friends, etc. can raise above them), throttled to avoid a SetWindowPos
+    // call every timer tick.
     static DWORD lastTopmostRefresh = 0;
     if (IsAnyMonitorActive()) {
         DWORD nowTick = GetTickCount();
@@ -414,9 +400,9 @@ void HandleTimeout(WPARAM wParam) {
         lastTopmostRefresh = 0;
     }
 
-    // Backstop: the shell can externally hide, minimize, or move the screen
-    // saver windows (e.g. while showing taskbar thumbnail previews). Verify
-    // and restore, logging anything that was externally altered.
+    // Backstop: the shell can hide/minimize/move the screen saver windows
+    // (e.g. taskbar thumbnail previews). Verify and restore, logging anything
+    // externally altered.
     VerifyScreenSaverWindows();
 }
 

@@ -1,20 +1,15 @@
-// oled_aegis.h - Shared header for OLED Aegis.
-//
-// All constants, types, shared globals, and cross-module function prototypes
-// live here. Each .c file in src/ implements one subsystem:
-//
-//   oled_aegis.c  - entry point, main window, idle-check timer state machine,
-//                   tray icon
+// oled_aegis.h - Shared header for OLED Aegis: constants, types, shared
+// globals, and cross-module prototypes. Module ownership:
+//   oled_aegis.c  - entry point, main window, idle-check timer, tray icon
 //   monitors.c    - monitor enumeration and lookup helpers
-//   screensaver.c - the black screen saver windows (show/hide, topmost,
-//                   watchdog, shell-window closing)
+//   screensaver.c - screen saver windows (show/hide, topmost, watchdog,
+//                   shell-window closing)
 //   media.c       - audio/video media detection (WASAPI sessions, window scan)
 //   settings.c    - settings dialog UI
 //   config.c      - .ini config load/save, startup registry
 //   logging.c     - debug log file
-//   util.c        - small shared helpers (paths, DPI, cursor)
-//
-// The MMDevice / audio-session GUIDs are defined in media.c (see there).
+//   util.c        - shared helpers (paths, DPI, cursor)
+// MMDevice/audio-session GUIDs are defined in media.c (see there).
 
 #ifndef OLED_AEGIS_H
 #define OLED_AEGIS_H
@@ -73,8 +68,8 @@
 #define IDM_EXIT                2
 
 // Timing constants
-#define INPUT_IGNORE_DELAY_MS           500     // Delay after screen saver window creation to ignore input
-#define IDLE_ACTIVITY_THRESHOLD_MS      1000    // Time threshold to consider user active (1 second)
+#define INPUT_IGNORE_DELAY_MS           500     // Ignore input right after screen saver window creation
+#define IDLE_ACTIVITY_THRESHOLD_MS      1000    // Time threshold to count the user as active
 #define IDLE_DEACTIVATE_THRESHOLD_MS    2000    // Time threshold to deactivate screen saver after input
 #define IDLE_DEACTIVATE_THRESHOLD_SEC   2       // Time threshold in seconds (for per-monitor mode)
 #define SHELL_CLOSE_DELAY_MS            250     // Delay after sending Escape to close shell windows
@@ -86,12 +81,12 @@
 #define AUDIO_GRACE_PERIOD_MS           30000   // Keep media state during brief audio silence (quiet passages)
 #define CURSOR_COUNTER_MAX_ATTEMPTS     16      // Safety bound when normalizing ShowCursor's counter
 #define TOPMOST_REFRESH_INTERVAL_MS     5000    // Reassert topmost occasionally, not every timer tick
-#define FULLSCREEN_FOREGROUND_MIN_COVERAGE_PCT 95 // Foreground window covering >=95% of a monitor counts as fullscreen for the pixel-probe skip
+#define FULLSCREEN_FOREGROUND_MIN_COVERAGE_PCT 95 // Foreground window covering >=95% of a monitor counts as fullscreen (pixel-probe skip)
 #define FADE_TIMER_INTERVAL_MS          15      // Fade animation step (~66 fps)
 #define DEFAULT_FADE_DURATION_MS        400     // Default fade-to-black transition duration
 #define MIN_FADE_DURATION_MS            0       // 0 = instant show/hide (legacy behavior)
 #define MAX_FADE_DURATION_MS            3000
-#define MAX_ACTIVE_AUDIO_PIDS           64      // Upper bound on concurrently active audio sessions we track
+#define MAX_ACTIVE_AUDIO_PIDS           64      // Cap on concurrently active audio sessions we track
 #define MAX_BROWSER_WINDOW_INFO         32      // Max browser windows to collect for diagnostic logging
 
 // Check interval bounds (milliseconds)
@@ -129,10 +124,8 @@ typedef struct {
     int enabled;
     HWND hScreenSaverWnd;
     DWORD mediaPauseOffsetMs;  // Idle ms excluded from this monitor's countdown while media plays on it
-    // Fade-to-black transition state (only used when fadeDurationMs > 0):
-    // the monitor window's alpha is animated from fadeFromAlpha to
-    // fadeToAlpha over fadeDurationMs. fadeActive is 0 when no transition
-    // is in progress; fadeDurationMs here is the in-flight fade's duration.
+    // Fade-to-black state (when fadeDurationMs > 0): alpha animates from
+    // fadeFromAlpha to fadeToAlpha; fadeActive = 0 when no fade is running.
     int fadeActive;
     BYTE fadeFromAlpha;
     BYTE fadeToAlpha;
