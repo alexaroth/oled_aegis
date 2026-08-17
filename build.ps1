@@ -13,6 +13,10 @@ $sourceFiles = @(
     (Join-Path $PSScriptRoot "src\config.c"),
     (Join-Path $PSScriptRoot "src\monitors.c"),
     (Join-Path $PSScriptRoot "src\media.c"),
+    (Join-Path $PSScriptRoot "src\media_classify.c"),
+    (Join-Path $PSScriptRoot "src\media_audio.c"),
+    (Join-Path $PSScriptRoot "src\media_windows.c"),
+    (Join-Path $PSScriptRoot "src\media_motion.c"),
     (Join-Path $PSScriptRoot "src\screensaver.c"),
     (Join-Path $PSScriptRoot "src\settings.c")
 )

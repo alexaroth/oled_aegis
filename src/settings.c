@@ -1,6 +1,4 @@
-// settings.c - Settings dialog UI: layout, tooltips, DPI scaling,
-// ApplySettings. Owns the dialog window and font handles.
-// Part of OLED Aegis. See oled_aegis.h for shared types/constants.
+// settings.c - Settings dialog UI: layout, tooltips, DPI scaling, ApplySettings. Part of OLED Aegis. Owns the dialog window and font handles.
 
 #include "oled_aegis.h"
 
@@ -9,25 +7,30 @@ HWND g_hSettingsDialog = NULL;
 static HFONT g_hSettingsFont = NULL;
 static HWND g_hTooltipControl = NULL;
 
-static int ScaleDPI(int value) {
+static int ScaleDPI(int value)
+{
     return MulDiv(value, g_settingsDpi, 96);
 }
 
-static UINT GetDpiForWindowCompat(HWND hWnd) {
+static UINT GetDpiForWindowCompat(HWND hWnd)
+{
     // GetDpiForWindow requires Windows 10 1607+
     typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
     static PFN_GetDpiForWindow pfnGetDpiForWindow = NULL;
     static int checked = 0;
 
-    if (!checked) {
+    if (!checked)
+    {
         HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
-        if (hUser32) {
+        if (hUser32)
+        {
             pfnGetDpiForWindow = (PFN_GetDpiForWindow)GetProcAddress(hUser32, "GetDpiForWindow");
         }
         checked = 1;
     }
 
-    if (pfnGetDpiForWindow && hWnd) {
+    if (pfnGetDpiForWindow && hWnd)
+    {
         return pfnGetDpiForWindow(hWnd);
     }
 
@@ -38,12 +41,15 @@ static UINT GetDpiForWindowCompat(HWND hWnd) {
     return dpi ? dpi : 96;
 }
 
-LRESULT CALLBACK SettingsDialogProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    switch (message) {
+LRESULT CALLBACK SettingsDialogProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
         case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
-            switch (wmId) {
+            switch (wmId)
+            {
                 case IDC_APPLY_BTN:
                     ApplySettings(hWnd);
                     break;
@@ -65,7 +71,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hWnd, UINT message, WPARAM wParam, LPAR
             g_hSettingsDialog = NULL;
             return 0;
         case WM_DESTROY:
-            if (g_hSettingsFont) {
+            if (g_hSettingsFont)
+            {
                 DeleteObject(g_hSettingsFont);
                 g_hSettingsFont = NULL;
             }
@@ -74,7 +81,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hWnd, UINT message, WPARAM wParam, LPAR
     return DefWindowProc(hWnd, message, wParam, lParam);
 }
 
-static void AddTooltip(HWND hParent, HWND hControl, const char* text) {
+static void AddTooltip(HWND hParent, HWND hControl, const char* text)
+{
     TOOLINFOA ti = {0};
     ti.cbSize = sizeof(TOOLINFOA);
     ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
@@ -86,10 +94,12 @@ static void AddTooltip(HWND hParent, HWND hControl, const char* text) {
     SendMessageA(g_hTooltipControl, TTM_ADDTOOLA, 0, (LPARAM)&ti);
 }
 
-void ShowSettingsDialog() {
+void ShowSettingsDialog()
+{
     EnsureCursorVisible("settings dialog opened");
 
-    if (g_hSettingsDialog) {
+    if (g_hSettingsDialog)
+    {
         SetForegroundWindow(g_hSettingsDialog);
         return;
     }
@@ -131,7 +141,8 @@ void ShowSettingsDialog() {
                                       ScaleDPI(410), ScaleDPI(430),
                                       NULL, NULL, hMod, NULL);
 
-    if (g_hSettingsDialog) {
+    if (g_hSettingsDialog)
+    {
         SetWindowLongPtr(g_hSettingsDialog, GWLP_WNDPROC, (LONG_PTR)SettingsDialogProc);
 
         // Update DPI now that we have a window
@@ -243,7 +254,8 @@ void ShowSettingsDialog() {
                      margin, y, ScaleDPI(100), controlHeight, g_hSettingsDialog, NULL, hMod, NULL);
         y += rowHeight;
 
-        for (int i = 0; i < g_monitorCount; i++) {
+        for (int i = 0; i < g_monitorCount; i++)
+        {
             HWND hMonitorCheck = CreateWindowA("BUTTON", g_monitors[i].displayName,
                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                          margin, y, checkboxWidth, controlHeight,
@@ -283,7 +295,8 @@ void ShowSettingsDialog() {
                      0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
         // Apply font to all controls
-        if (g_hSettingsFont) {
+        if (g_hSettingsFont)
+        {
             SendMessageA(hTimeoutLabel, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
             SendMessageA(hTimeoutEdit, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
             SendMessageA(hTimeoutUpDown, WM_SETFONT, (WPARAM)g_hSettingsFont, TRUE);
@@ -355,7 +368,8 @@ void ShowSettingsDialog() {
         sprintf_s(buffer, 32, "%d", g_app.config.fadeDurationMs);
         SetDlgItemTextA(g_hSettingsDialog, IDC_FADE_EDIT, buffer);
 
-        for (int i = 0; i < g_monitorCount; i++) {
+        for (int i = 0; i < g_monitorCount; i++)
+        {
             CheckDlgButton(g_hSettingsDialog, IDC_MONITOR_BASE + i, g_app.config.monitorsEnabled[i] ? BST_CHECKED : BST_UNCHECKED);
         }
 
@@ -364,7 +378,8 @@ void ShowSettingsDialog() {
     }
 }
 
-void ApplySettings(HWND hWnd) {
+void ApplySettings(HWND hWnd)
+{
     char buffer[32];
     GetDlgItemTextA(hWnd, IDC_TIMEOUT_EDIT, buffer, 32);
     int oldTimeout = g_app.config.idleTimeout;
@@ -395,31 +410,37 @@ void ApplySettings(HWND hWnd) {
     g_app.config.fadeDurationMs = atoi(buffer);
     ClampConfigValues();
 
-    for (int i = 0; i < g_monitorCount; i++) {
+    for (int i = 0; i < g_monitorCount; i++)
+    {
         int wasEnabled = g_app.config.monitorsEnabled[i];
         g_app.config.monitorsEnabled[i] = IsDlgButtonChecked(hWnd, IDC_MONITOR_BASE + i) == BST_CHECKED;
         g_monitorStates[i].enabled = g_app.config.monitorsEnabled[i];
 
-        if (!g_app.config.monitorsEnabled[i] && g_monitorStates[i].screenSaverActive) {
+        if (!g_app.config.monitorsEnabled[i] && g_monitorStates[i].screenSaverActive)
+        {
             LogMessage("Disabling monitor %d which has active screen saver, hiding it", i);
             HideScreenSaverOnMonitor(i);
         }
 
-        if (!g_app.config.monitorsEnabled[i] && wasEnabled && g_monitorStates[i].hScreenSaverWnd) {
+        if (!g_app.config.monitorsEnabled[i] && wasEnabled && g_monitorStates[i].hScreenSaverWnd)
+        {
             DestroyWindow(g_monitorStates[i].hScreenSaverWnd);
             g_monitorStates[i].hScreenSaverWnd = NULL;
             LogMessage("Destroyed screen saver window for disabled monitor %d", i);
         }
     }
 
-    if (!IsAnyMonitorActive()) {
+    if (!IsAnyMonitorActive())
+    {
         g_app.screenSaverActive = 0;
         EnsureCursorVisible("no active monitors after settings");
     }
 
-    if (!oldPerMonitor && g_app.config.perMonitorInputDetection) {
+    if (!oldPerMonitor && g_app.config.perMonitorInputDetection)
+    {
         time_t now = time(NULL);
-        for (int i = 0; i < g_monitorCount; i++) {
+        for (int i = 0; i < g_monitorCount; i++)
+        {
             g_monitorStates[i].lastInputTime = now;
         }
         LogMessage("Per-monitor mode enabled: reset all monitor idle times");
@@ -442,7 +463,8 @@ void ApplySettings(HWND hWnd) {
              g_app.config.pixelShiftCompensation,
              g_app.config.fadeDurationMs);
 
-    if (oldInterval != g_app.config.checkInterval) {
+    if (oldInterval != g_app.config.checkInterval)
+    {
         KillTimer(g_app.hWnd, TIMER_IDLE_CHECK);
         SetTimer(g_app.hWnd, TIMER_IDLE_CHECK, g_app.config.checkInterval, NULL);
         LogMessage("Timer recreated with new interval: %dms", g_app.config.checkInterval);

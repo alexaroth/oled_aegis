@@ -93,6 +93,10 @@
     <ClCompile Include="src\config.c" />
     <ClCompile Include="src\logging.c" />
     <ClCompile Include="src\media.c" />
+    <ClCompile Include="src\media_classify.c" />
+    <ClCompile Include="src\media_audio.c" />
+    <ClCompile Include="src\media_windows.c" />
+    <ClCompile Include="src\media_motion.c" />
     <ClCompile Include="src\monitors.c" />
     <ClCompile Include="src\screensaver.c" />
     <ClCompile Include="src\settings.c" />
@@ -100,6 +104,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\oled_aegis.h" />
+    <ClInclude Include="src\media_classify.h" />
+    <ClInclude Include="src\media_audio.h" />
+    <ClInclude Include="src\media_windows.h" />
+    <ClInclude Include="src\media_motion.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="src\oled_aegis.rc" />

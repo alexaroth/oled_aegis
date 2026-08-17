@@ -27,6 +27,18 @@
     <ClCompile Include="src\media.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\media_classify.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\media_audio.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\media_windows.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\media_motion.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\monitors.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -42,6 +54,18 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\oled_aegis.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\media_classify.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\media_audio.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\media_windows.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\media_motion.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

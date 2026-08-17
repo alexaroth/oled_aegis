@@ -1,15 +1,4 @@
-// oled_aegis.h - Shared header for OLED Aegis: constants, types, shared
-// globals, and cross-module prototypes. Module ownership:
-//   oled_aegis.c  - entry point, main window, idle-check timer, tray icon
-//   monitors.c    - monitor enumeration and lookup helpers
-//   screensaver.c - screen saver windows (show/hide, topmost, watchdog,
-//                   shell-window closing)
-//   media.c       - audio/video media detection (WASAPI sessions, window scan)
-//   settings.c    - settings dialog UI
-//   config.c      - .ini config load/save, startup registry
-//   logging.c     - debug log file
-//   util.c        - shared helpers (paths, DPI, cursor)
-// MMDevice/audio-session GUIDs are defined in media.c (see there).
+// oled_aegis.h - Shared header: constants, types, shared globals, prototypes. Module ownership listed in AGENTS.md; GUIDs are defined in media.c.
 
 #ifndef OLED_AEGIS_H
 #define OLED_AEGIS_H
@@ -105,7 +94,8 @@
 #define DEVICE_NAME_PREFIX      "\\\\.\\"
 #define DEVICE_NAME_PREFIX_LEN  4
 
-typedef struct {
+typedef struct
+{
     HMONITOR hMonitor;
     RECT rect;
     int monitorIndex;
@@ -118,14 +108,14 @@ typedef struct {
     int height;
 } MonitorInfo;
 
-typedef struct {
+typedef struct
+{
     time_t lastInputTime;
     int screenSaverActive;
     int enabled;
     HWND hScreenSaverWnd;
     DWORD mediaPauseOffsetMs;  // Idle ms excluded from this monitor's countdown while media plays on it
-    // Fade-to-black state (when fadeDurationMs > 0): alpha animates from
-    // fadeFromAlpha to fadeToAlpha; fadeActive = 0 when no fade is running.
+    // Fade-to-black state (when fadeDurationMs > 0): alpha animates from fadeFromAlpha to fadeToAlpha; fadeActive = 0 when no fade is running.
     int fadeActive;
     BYTE fadeFromAlpha;
     BYTE fadeToAlpha;
@@ -133,7 +123,8 @@ typedef struct {
     DWORD fadeDurationMs;
 } MonitorState;
 
-typedef struct {
+typedef struct
+{
     int idleTimeout;
     int checkInterval;
     int mediaDetectionEnabled;
@@ -148,7 +139,8 @@ typedef struct {
     int fadeDurationMs;  // Fade-to-black transition duration in ms (0 = instant)
 } Config;
 
-typedef struct {
+typedef struct
+{
     HWND hWnd;
     Config config;
     NOTIFYICONDATAA nid;

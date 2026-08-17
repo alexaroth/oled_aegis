@@ -13,7 +13,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo Compiling executable...
-cl.exe ..\src\oled_aegis.c ..\src\util.c ..\src\logging.c ..\src\config.c ..\src\monitors.c ..\src\media.c ..\src\screensaver.c ..\src\settings.c /Fe:oled_aegis.exe /O2 /nologo /MD /D "INITGUID" /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib psapi.lib dwmapi.lib oled_aegis.res
+cl.exe ..\src\oled_aegis.c ..\src\util.c ..\src\logging.c ..\src\config.c ..\src\monitors.c ..\src\media.c ..\src\media_classify.c ..\src\media_audio.c ..\src\media_windows.c ..\src\media_motion.c ..\src\screensaver.c ..\src\settings.c /Fe:oled_aegis.exe /O2 /nologo /MD /D "INITGUID" /link user32.lib shell32.lib ole32.lib uuid.lib gdi32.lib advapi32.lib comctl32.lib powrprof.lib psapi.lib dwmapi.lib oled_aegis.res
 if %ERRORLEVEL% EQU 0 (
     echo Build successful!
     echo Output: build\oled_aegis.exe
