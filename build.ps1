@@ -30,9 +30,19 @@ if (Test-Path $envCache) {
         Set-Item -Path "env:$key" -Value $value
     }
 } else {
-    $vsPath = "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
-    if (!(Test-Path $vsPath)) {
-        Write-Error "Visual Studio not found at expected path: $vsPath"
+    $vsCandidates = @(
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles}\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    )
+    $vsPath = $null
+    foreach ($candidate in $vsCandidates) {
+        if (Test-Path $candidate) {
+            $vsPath = $candidate
+            break
+        }
+    }
+    if (!$vsPath) {
+        Write-Error "Visual Studio vcvarsall.bat not found. Checked: $($vsCandidates -join '; ')"
         Pop-Location
         exit 1
     }
