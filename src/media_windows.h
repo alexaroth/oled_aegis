@@ -7,16 +7,16 @@ typedef struct
 {
     // Monitors hosting visible windows of audible-audio processes.
     int audibleMapped[MAX_MONITOR_COUNT];
-    // Windows mapped via audible audio (ambiguity check: >1 means audio can't be attributed to a single window).
-    int audibleMappedWindowCount;
+    // Per-process visible-window count of audible processes (indexed like the audio names array).
+    // RuleAmbiguityClear uses it: >1 window of ONE process (e.g. a browser) means its audio can't be
+    // attributed - different processes on different monitors are NOT ambiguous.
+    int audibleProcWindowCount[MAX_ACTIVE_AUDIO_PIDS];
     // Visible media windows with NO audio (muted candidates, e.g. hover previews), gated on per-monitor motion so paused windows don't block.
     int mutedRectCount;
     RECT mutedRects[MAX_BROWSER_WINDOW_INFO];
-    // Visible browser windows examined: diagnostics for the mask-change log plus the single-browser-window rule (browserRects[0]).
+    // Visible browser windows examined: titles for the mask-change log (diagnostics only).
     int browserWindowCount;
     char browserTitles[MAX_BROWSER_WINDOW_INFO][256];
-    int browserMatched[MAX_BROWSER_WINDOW_INFO];  // title hint matched (diagnostic only)
-    RECT browserRects[MAX_BROWSER_WINDOW_INFO];
 } MediaWindowEvidence;
 
 // Walk visible top-level windows and fill the evidence. Audio windows match by exe name, not PID (Chromium audio is in renderer processes).

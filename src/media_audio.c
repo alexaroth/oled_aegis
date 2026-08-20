@@ -36,9 +36,9 @@ static int GetProcessNameFromPid(DWORD pid, char* buffer, int bufferSize)
     return buffer[0] != '\0' ? 1 : 0;
 }
 
-int CollectActiveAudioProcessNames(char names[][MAX_PATH], int maxNames)
+int CollectActiveAudioProcessNames(char names[][MAX_PATH], DWORD pids[], int maxNames)
 {
-    if (!names || maxNames <= 0) return 0;
+    if (!names || !pids || maxNames <= 0) return 0;
 
     IMMDeviceEnumerator* pEnum = NULL;
     IMMDevice* pDevice = NULL;
@@ -123,6 +123,8 @@ int CollectActiveAudioProcessNames(char names[][MAX_PATH], int maxNames)
                                 {
                                     strncpy(names[count], procName, MAX_PATH - 1);
                                     names[count][MAX_PATH - 1] = '\0';
+                                    // First audible session for this exe; the fullscreen rule matches the foreground window PID against these.
+                                    pids[count] = pid;
                                     count++;
                                 }
                             }

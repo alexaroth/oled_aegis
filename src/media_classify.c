@@ -1,26 +1,7 @@
-// media_classify.c - exe name -> MediaProcessClass table + video-site title hints. All process knowledge lives here; media.c only consumes the classes.
+// media_classify.c - exe name -> MediaProcessClass table. All process knowledge lives here; media.c only consumes the classes.
 
 #include "oled_aegis.h"
 #include "media_classify.h"
-
-// Case-insensitive substring search (MSVC _strnicmp-based)
-static int ContainsIgnoreCase(const char* haystack, const char* needle)
-{
-    if (!haystack || !needle) return 0;
-
-    size_t needleLen = strlen(needle);
-    if (needleLen == 0) return 1;
-
-    for (const char* p = haystack; *p; p++)
-    {
-        if (_strnicmp(p, needle, needleLen) == 0)
-        {
-            return 1;
-        }
-    }
-
-    return 0;
-}
 
 // Exe names by class: audio-only apps are NOT video players (music must not keep the display on); Parsec maps as video; nvcontainer is background audio.
 typedef struct
@@ -59,6 +40,7 @@ static const ProcessClassEntry g_processClasses[] = {
     { "video.ui.exe",           MEDIA_CLASS_VIDEO_PLAYER },
     { "parsec.exe",             MEDIA_CLASS_VIDEO_PLAYER },
     { "parsecd.exe",            MEDIA_CLASS_VIDEO_PLAYER },
+    { "zoom.exe",               MEDIA_CLASS_VIDEO_PLAYER },
 
     { "spotify.exe",            MEDIA_CLASS_AUDIO_ONLY },
     { "itunes.exe",             MEDIA_CLASS_AUDIO_ONLY },
@@ -78,6 +60,11 @@ static const ProcessClassEntry g_processClasses[] = {
     { "audacious.exe",          MEDIA_CLASS_AUDIO_ONLY },
 
     { "nvcontainer.exe",        MEDIA_CLASS_BACKGROUND },
+
+    { "leagueclient.exe",       MEDIA_CLASS_BACKGROUND },
+    { "leagueclientux.exe",     MEDIA_CLASS_BACKGROUND },
+    { "leagueclientuxrender.exe",MEDIA_CLASS_BACKGROUND },
+    { "riotclientservices.exe", MEDIA_CLASS_BACKGROUND },
 };
 
 MediaProcessClass ClassifyProcess(const char* processName)
@@ -92,53 +79,4 @@ MediaProcessClass ClassifyProcess(const char* processName)
         }
     }
     return MEDIA_CLASS_UNKNOWN;
-}
-
-// Video-site title hints only (audio-only services excluded: music must not keep the display on; "YouTube Music" is covered by the "YouTube" hint).
-static int WindowTitleHasMediaHint(const char* title)
-{
-    static const char* const mediaTitleHints[] = {
-        "YouTube",
-        "Twitch",
-        "Netflix",
-        "Hulu",
-        "Disney+",
-        "Prime Video",
-        "Amazon Prime",
-        "HBO Max",
-        "Paramount+",
-        "Peacock",
-        "Crunchyroll",
-        "Vimeo",
-        "Dailymotion",
-        "Plex",
-        "Jellyfin",
-        "Emby",
-        "Media Player",
-        "VLC media player",
-        "Picture in picture",
-        "TikTok",
-        "/ X"           // x.com titles are "Home / X", "@user / X", "user on X: ... / X"
-    };
-
-    if (!title || title[0] == '\0') return 0;
-
-    for (int i = 0; i < (int)(sizeof(mediaTitleHints) / sizeof(mediaTitleHints[0])); i++)
-    {
-        if (ContainsIgnoreCase(title, mediaTitleHints[i]))
-        {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-int WindowCountsAsMedia(const char* processName, const char* title)
-{
-    if (ClassifyProcess(processName) == MEDIA_CLASS_VIDEO_PLAYER)
-    {
-        return 1;
-    }
-    return WindowTitleHasMediaHint(title);
 }

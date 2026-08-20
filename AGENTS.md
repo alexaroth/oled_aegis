@@ -50,24 +50,31 @@ All modules share `src/oled_aegis.h` (constants, typedefs, `extern` globals, cro
   1. Cheap gate: `CallNtPowerInformation(SystemExecutionState)` checks `ES_DISPLAY_REQUIRED`; skip everything if unset.
   2. WASAPI: enumerate default render endpoint sessions, keep processes whose session is `AudioSessionStateActive` **and** peak meter `> 0.0001f` (filters paused/silent
     sessions).
-  3. `EnumWindows` collects window evidence: visible, non-cloaked, non-tool windows of audio-active processes map their rect → monitors by overlap (title hints are diagnostic
-    only — the whitelist misses sites like Aniwave). Muted candidates (visible browser/media windows with no audio) are collected as rects; the motion probe decides whether their
-    monitor counts. Results cached 2 s.
+  3. `EnumWindows` collects window evidence: visible, non-cloaked, non-tool windows of **audio-active** processes map their rect → monitors by **geometry** (no title-hint gate: a
+    window that makes sound is where the content is, be it a game, Discord, or a browser). Music (`AUDIO_ONLY`) and background/launcher noise (`BACKGROUND`) are the only classes
+    that never map, even with a visible window — that audio must not keep a display on. Muted candidates (visible browser/media windows with no audio) are collected as rects; the
+    motion probe decides whether their monitor counts. Results cached 2 s.
   4. The **rule table** in `src/media.c` (`g_rules`, applied in array order — order IS policy, encodes the bug history) decides the final per-monitor mask:
-     - `single-browser` — exactly one visible browser window + audible audio → trust its rect (hint-less autoplay sites like Reddit).
-     - `ambiguity-clear` — audible audio with >1 visible window of the audio-active process: window mapping is dropped, the motion probe decides (a paused tab on the OLED must
-       not block the screen saver while playback is elsewhere). Fullscreen foreground windows keep their mapping.
+     - `ambiguity-clear` — a SINGLE audio-active process with >1 visible window (e.g. a browser with two windows: its audio can't be attributed to one): that process's window
+       mapping is dropped, the motion probe decides (a paused tab on the OLED must not block the screen saver while playback is elsewhere). Different audible processes on
+       different monitors are NOT ambiguous — geometry maps a game and a Discord window each to its own monitor, so only the per-process window count matters. Fullscreen
+       foreground windows keep their mapping.
      - `motion` — a monitor counts as media while its content moves (15 s grace; probe frozen while the screen saver covers the monitor, so the stale grace can't deactivate it;
        captures skipped per-monitor under fullscreen windows of non-media processes — a fullscreen browser/media player is sampled).
      - `muted` — muted-media rects map only while inside the 30 s audio grace **and** the monitor's content moves (or a fullscreen foreground window covers it); a paused window
        is static, so it never wakes the screen saver.
      - `grace-keep` — fresh scan mapped nothing inside the grace window (video minimized during a quiet passage): keep the cached mask (union, not overwrite).
-     - `no-audio` / `browser` / `audio-only` — skip the block-all fallback (no audible audio; only browsers audible but nothing visible; only music/podcast/background audio
-       audible).
-     - `fallback` — unknown non-browser audio: block all enabled monitors (conservative). The decision is logged with `reason=<rule name>` in the `mask=` line.
+     - `no-audio` / `browser` / `audio-only` — skip the unattributed-audio rule (no audible audio; only browsers audible but nothing visible; only music/podcast/background
+       audio audible).
+     - `fullscreen` — foreground window is fullscreen on a monitor and its process is audio-active (window PID match first, exe-name fallback): attribute playback to
+       that monitor instead of leaving it unattributed. EAC-protected games (War Thunder) fail `OpenProcess(VM_READ)`, so the match uses the window PID.
+     - `unattributed` — audible audio with nothing attributable (no visible window of the audible process, no fullscreen foreground) is treated as background/UI/hidden audio
+       and blocks NOTHING (the per-monitor burn-in goal wins; the motion probe already ran, so visible motion got its grace first). There is deliberately **no block-all
+       fallback** — that was the whack-a-mole engine that woke the OLED for every unclassified app's sound. The decision is logged with `reason=<rule name>` in the `mask=` line.
   - Browsers are matched **by exe name, not PID** (Chromium audio sessions belong to renderer processes; windows to the main process).
-  - Classification (`media_classify.c`) distinguishes browsers, video players (incl. Parsec `parsec.exe`/`parsecd.exe`), audio-only apps, and background audio (`nvcontainer.exe`)
-    — audio-only/background never trigger the fallback, so music can't wake the protected OLED.
+  - Classification (`media_classify.c`) is a NEGATIVE list only: browsers/players for mute/motion semantics, plus audio-only (`spotify.exe`…), background (`nvcontainer.exe`),
+    and launcher/UI noise (`leagueclient*.exe`, `riotclientservices.exe`) that must never block. Every other audible app with a visible window is mapped by geometry — no
+    per-app positive whitelist, so new games/players/streamers wake zero monitors.
 - **Modes** (all in `HandleTimeout`):
   - Global input + global media: all-on/all-off.
   - Global input + per-monitor media: per-monitor idle "pause" offsets (`mediaPauseOffsetMs` in `MonitorState`, global `g_mediaPauseOffsetMs`), cleared on real input.

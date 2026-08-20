@@ -104,6 +104,20 @@ static int IsAudioActiveProcessName(const EnumCtx* ctx, const char* processName)
     return 0;
 }
 
+// Index of processName in the audio-active names array (for per-process window counts), or -1.
+static int AudioActiveProcessIndex(const EnumCtx* ctx, const char* processName)
+{
+    if (!processName || !ctx) return -1;
+    for (int i = 0; i < ctx->audioCount; i++)
+    {
+        if (_stricmp(ctx->audioNames[i], processName) == 0)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam)
 {
     EnumCtx* ctx = (EnumCtx*)lParam;
@@ -155,14 +169,15 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam)
 
     // Muted candidates count outright: the visible window IS the media.
     int matched = 1;
-    int hintMatched = 1;  // Title-hint result, for the diagnostic log only
     if (isAudioActive)
     {
-        // Browser audio belongs to renderer PIDs, so map every visible window (hints miss sites like Aniwave); non-browser apps still need a hint.
-        hintMatched = WindowCountsAsMedia(processName, title);
-        if (cls != MEDIA_CLASS_BROWSER)
+        // Audible audio IS media: map ANY audible process's visible window to its monitor by geometry, no title
+        // hint needed (games, Discord, players - a window that makes sound is where the content is). Browser audio
+        // lives in renderer PIDs, so it too matches by exe here. Only music/background noise never maps: that audio
+        // must not keep a display on even when a window is visible (a visible Spotify window must not wake the OLED).
+        if (cls == MEDIA_CLASS_AUDIO_ONLY || cls == MEDIA_CLASS_BACKGROUND)
         {
-            matched = hintMatched;
+            matched = 0;
         }
     }
 
@@ -172,8 +187,6 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam)
         int idx = ev->browserWindowCount++;
         strncpy(ev->browserTitles[idx], title, 255);
         ev->browserTitles[idx][255] = '\0';
-        ev->browserMatched[idx] = hintMatched;
-        ev->browserRects[idx] = rect;
     }
 
     if (!matched)
@@ -183,7 +196,11 @@ static BOOL CALLBACK EnumMediaWindowCallback(HWND hWnd, LPARAM lParam)
 
     if (isAudioActive)
     {
-        ev->audibleMappedWindowCount++;
+        int procIndex = AudioActiveProcessIndex(ctx, processName);
+        if (procIndex >= 0 && procIndex < MAX_ACTIVE_AUDIO_PIDS)
+        {
+            ev->audibleProcWindowCount[procIndex]++;
+        }
         MarkMediaWindowMonitors(ev->audibleMapped, &rect);
     }
     else if (ev->mutedRectCount < MAX_BROWSER_WINDOW_INFO)

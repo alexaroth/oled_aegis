@@ -78,7 +78,7 @@ The screen saver will automatically deactivate from all monitors when:
 2. Media starts playing (if `mediaDetectionEnabled=1`)
 
 #### Per-Monitor Media Mode (`perMonitorMediaDetection=1`)
-Media playback is detected per monitor. The screen saver is only blocked on the monitor where media is actually playing, so playback on a secondary monitor won't keep the OLED awake. Detection uses Windows audio session APIs to determine which process is producing audible audio, then maps the playing window to its monitor.
+Media playback is detected per monitor. The screen saver is only blocked on the monitor where media is actually playing, so playback on a secondary monitor won't keep the OLED awake. Detection uses Windows audio session APIs to determine which process is producing audible audio, then maps the playing window to its monitor. Fullscreen games and other unknown apps with audible audio are attributed to the monitor covered by their foreground window (matched by process PID), so a game on one monitor won't keep the other monitors awake.
 
 #### Per-Monitor Input Mode (`perMonitorInputDetection=1`)
 Each enabled monitor has its own independent idle timer. Input is attributed to monitors based on:

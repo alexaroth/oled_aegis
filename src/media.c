@@ -93,34 +93,35 @@ typedef enum
 {
     REASON_NONE = 0,
     REASON_AUDIBLE_MAPPED,       // audible-audio window rects mapped monitors
-    REASON_SINGLE_BROWSER_WINDOW,
     REASON_MOTION,               // only the motion probe flagged monitors
     REASON_MUTED_MAPPING,
     REASON_GRACE_KEEP,           // cached mask kept during an audio grace
     REASON_NO_AUDIO_SKIP,
     REASON_BROWSER_SKIP,
     REASON_AUDIO_ONLY_SKIP,
-    REASON_BLOCK_ALL_FALLBACK
+    REASON_FULLSCREEN_MAPPED,    // foreground fullscreen window of an audio-active process
+    REASON_UNATTRIBUTED_SKIP     // audible audio with no attributable monitor (already a skip, no block-all)
 } MediaScanReason;
 
 static const char* const g_reasonNames[] = {
-    "none", "audible", "single-browser", "motion", "muted", "grace",
-    "no-audio", "browser", "audio-only", "fallback"
+    "none", "audible", "motion", "muted", "grace",
+    "no-audio", "browser", "audio-only", "fullscreen", "unattributed"
 };
 
 typedef struct
 {
     int mediaOnMonitor[MAX_MONITOR_COUNT];  // mask being built
     char audioNames[MAX_ACTIVE_AUDIO_PIDS][MAX_PATH];
+    DWORD audioPids[MAX_ACTIVE_AUDIO_PIDS];  // PID of the first audible session per exe
     int audioCount;
     int inAudioGrace;            // No audio this scan, but inside the post-audio grace window
-    int mappedMonitorCount;      // Monitors mapped from window rects (audible/muted/single-browser)
+    int mappedMonitorCount;      // Monitors mapped from window rects (audible/muted)
     MediaWindowEvidence ev;
     int motionDiff[MAX_MONITOR_COUNT];
     int motionFails[MAX_MONITOR_COUNT];
     DWORD motionAge[MAX_MONITOR_COUNT];
     // Decision trace for the mask-change log
-    int fallback, mutedMap, browserSkip, audioOnlySkip, noAudioSkip, graceKeep, clear;
+    int unattributed, mutedMap, browserSkip, audioOnlySkip, noAudioSkip, graceKeep, clear;
     MediaScanReason reason;
 } MediaScan;
 
@@ -157,26 +158,23 @@ static int AllAudioAreAudioOnlyOrBackground(const MediaScan* s)
 
 // Rules: each returns 1 when it ends the scan (terminal), 0 to continue.
 
-// R1: One visible browser window + audible audio => it must be the source, so trust its rect (fixes hint-less autoplay sites). Gated on audio: no audio = paused tab.
-static int RuleSingleBrowserWindow(MediaScan* s)
-{
-    if (s->mappedMonitorCount != 0 || s->ev.browserWindowCount != 1 || s->audioCount == 0)
-    {
-        return 0;
-    }
-    MarkMediaWindowMonitors(s->mediaOnMonitor, &s->ev.browserRects[0]);
-    s->mappedMonitorCount = CountMappedMonitors(s);
-    if (s->mappedMonitorCount > 0)
-    {
-        s->reason = REASON_SINGLE_BROWSER_WINDOW;
-    }
-    return 0;
-}
-
-// R2: Audible audio with >1 visible window of the audio-active process: drop the mapping (audio can't be attributed), motion probe decides; fullscreen keeps it.
+// R2: Audible audio with >1 visible window of the SAME audio-active process (e.g. a browser with two windows: its
+// audio can't be attributed to one of them): drop the window mapping, the motion probe decides; fullscreen keeps it.
+// Different audible processes on different monitors are NOT ambiguous (geometry maps a game and a Discord window each
+// to its own monitor), so only the per-process count matters here.
 static int RuleAmbiguityClear(MediaScan* s)
 {
-    if (s->audioCount == 0 || s->ev.audibleMappedWindowCount <= 1)
+    if (s->audioCount == 0) return 0;
+    int anyProcessAmbiguous = 0;
+    for (int i = 0; i < s->audioCount && i < MAX_ACTIVE_AUDIO_PIDS; i++)
+    {
+        if (s->ev.audibleProcWindowCount[i] > 1)
+        {
+            anyProcessAmbiguous = 1;
+            break;
+        }
+    }
+    if (!anyProcessAmbiguous)
     {
         return 0;
     }
@@ -216,7 +214,7 @@ static int RuleMutedMapping(MediaScan* s)
     }
     else if (!AllAudioAre(s, MEDIA_CLASS_BROWSER))
     {
-        // Non-browser audio (Discord) doesn't explain ES_DISPLAY_REQUIRED; the media is likely a muted browser preview. Mapping beats block-all.
+        // Non-browser audio (Discord) doesn't explain ES_DISPLAY_REQUIRED; the media is likely a muted browser preview. Mapping beats an unattributed skip.
         canUse = 1;
     }
     if (!canUse) return 0;
@@ -266,45 +264,111 @@ static int RuleGraceKeep(MediaScan* s)
 static int RuleNoAudioSkip(MediaScan* s)
 {
     if (s->mappedMonitorCount != 0 || s->inAudioGrace || s->audioCount != 0) return 0;
-    LogMessage("Media detection: no audible audio recently and nothing mapped: skipping fallback");
+    LogMessage("Media detection: no audible audio recently and nothing mapped: skipping media detection");
     s->noAudioSkip = 1;
     s->reason = REASON_NO_AUDIO_SKIP;
     return 1;
 }
 
-// R7 (terminal): Audio-active processes are all browsers but nothing mapped (no visible window, e.g. minimized tab): nothing to protect, skip fallback.
+// R7 (terminal): Audio-active processes are all browsers but nothing mapped (no visible window, e.g. minimized tab): nothing to protect, skip media detection.
 static int RuleBrowserSkip(MediaScan* s)
 {
     if (s->mappedMonitorCount != 0 || !AllAudioAre(s, MEDIA_CLASS_BROWSER)) return 0;
-    LogMessage("Media detection: no visible browser window, all audio-active processes are browsers: skipping fallback");
+    LogMessage("Media detection: no visible browser window, all audio-active processes are browsers: skipping media detection");
     s->browserSkip = 1;
     s->reason = REASON_BROWSER_SKIP;
     return 1;
 }
 
-// R8 (terminal): All audio-active processes are audio-only/background: music never needs the display, so it must not block the saver - even the fallback.
+// R8 (terminal): All audio-active processes are audio-only/background: music never needs the display, so it must not block the saver.
 static int RuleAudioOnlySkip(MediaScan* s)
 {
     if (s->mappedMonitorCount != 0 || !AllAudioAreAudioOnlyOrBackground(s)) return 0;
-    LogMessage("Media detection: all audio-active processes are known audio-only apps: skipping fallback");
+    LogMessage("Media detection: all audio-active processes are known audio-only apps: skipping media detection");
     s->audioOnlySkip = 1;
     s->reason = REASON_AUDIO_ONLY_SKIP;
     return 1;
 }
 
-// R9 (terminal): Non-browser audio (unknown app, minimized player, non-default device): conservatively block all enabled monitors rather than cover playback.
-static int RuleBlockAll(MediaScan* s)
+// R9 (terminal): Foreground fullscreen window of an audio-active process: attribute the playback to its monitor(s) instead of blocking all.
+// EAC-protected games fail the title-hint mapping and deny OpenProcess(VM_READ), so match the foreground window PID first.
+static int RuleForegroundFullscreenMapping(MediaScan* s)
 {
-    if (s->mappedMonitorCount != 0) return 0;
+    if (s->mappedMonitorCount != 0 || s->audioCount == 0)
+    {
+        return 0;
+    }
+
+    HWND hFg = GetForegroundWindow();
+    if (!hFg)
+    {
+        return 0;
+    }
+
+    DWORD fgPid = 0;
+    GetWindowThreadProcessId(hFg, &fgPid);
+    if (fgPid == 0)
+    {
+        return 0;
+    }
+
+    int fgIsAudioActive = 0;
+    for (int i = 0; i < s->audioCount; i++)
+    {
+        if (s->audioPids[i] == fgPid)
+        {
+            fgIsAudioActive = 1;
+            break;
+        }
+    }
+
+    // Same exe with a second session carries a PID not recorded above (first-session PID only): fall back to a name match.
+    if (!fgIsAudioActive)
+    {
+        char fgProcess[MAX_PATH] = {0};
+        if (GetProcessNameFromHwnd(hFg, fgProcess, sizeof(fgProcess)))
+        {
+            for (int i = 0; i < s->audioCount; i++)
+            {
+                if (_stricmp(fgProcess, s->audioNames[i]) == 0)
+                {
+                    fgIsAudioActive = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (!fgIsAudioActive)
+    {
+        return 0;
+    }
+
     for (int i = 0; i < g_monitorCount; i++)
     {
-        if (g_monitorStates[i].enabled)
+        if (IsForegroundFullscreenOnMonitor(i))
         {
             s->mediaOnMonitor[i] = 1;
         }
     }
-    s->fallback = 1;
-    s->reason = REASON_BLOCK_ALL_FALLBACK;
+    s->mappedMonitorCount = CountMappedMonitors(s);
+    if (s->mappedMonitorCount > 0)
+    {
+        s->reason = REASON_FULLSCREEN_MAPPED;
+        return 1;
+    }
+    return 0;
+}
+
+// R10 (terminal): Audible audio with nothing attributable (no visible window, no fullscreen foreground). A real sound
+// we can't place is background/UI noise or hidden media - never keep the OLED awake for it (per-monitor burns are the
+// whole point; a sound we can't find a monitor for must not override that). The motion probe already ran (R3), so any
+// visible motion gets its own grace before this terminal skip.
+static int RuleUnattributedSkip(MediaScan* s)
+{
+    if (s->mappedMonitorCount != 0) return 0;
+    LogMessage("Media detection: audible audio with no attributable monitor: skipping (no monitor blocked)");
+    s->unattributed = 1;
+    s->reason = REASON_UNATTRIBUTED_SKIP;
     return 1;
 }
 
@@ -315,7 +379,6 @@ typedef struct
 } MediaRule;
 
 static const MediaRule g_rules[] = {
-    { RuleSingleBrowserWindow, 0 },
     { RuleAmbiguityClear,       0 },
     { RuleMotionSupplement,     0 },
     { RuleMutedMapping,         0 },
@@ -323,7 +386,8 @@ static const MediaRule g_rules[] = {
     { RuleNoAudioSkip,          1 },
     { RuleBrowserSkip,          1 },
     { RuleAudioOnlySkip,        1 },
-    { RuleBlockAll,             1 },
+    { RuleForegroundFullscreenMapping, 1 },
+    { RuleUnattributedSkip,     1 },
 };
 
 // --- scan orchestration ---
@@ -388,7 +452,7 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT])
     MediaScan scan;
     memset(&scan, 0, sizeof(scan));
 
-    scan.audioCount = CollectActiveAudioProcessNames(scan.audioNames, MAX_ACTIVE_AUDIO_PIDS);
+    scan.audioCount = CollectActiveAudioProcessNames(scan.audioNames, scan.audioPids, MAX_ACTIVE_AUDIO_PIDS);
 
     if (scan.audioCount > 0) 
     {
@@ -463,18 +527,16 @@ int UpdateMediaMonitorStates(int mediaOnMonitor[MAX_MONITOR_COUNT])
     {
         for (int i = 0; i < scan.ev.browserWindowCount; i++)
         {
-            LogMessage("Media detection: browser window MAPPED (hint: %s): '%.120s'",
-                       scan.ev.browserMatched[i] ? "MATCHED" : "no hint",
-                       scan.ev.browserTitles[i]);
+            LogMessage("Media detection: browser window MAPPED: '%.120s'", scan.ev.browserTitles[i]);
         }
         for (int i = 0; i < scan.audioCount; i++)
         {
             LogMessage("Media detection: active audio process: %s", scan.audioNames[i]);
         }
-        LogMessage("Media monitor detection: mask=0x%08X (activeAudioNames=%d, fallback=%d, mutedMap=%d, "
+        LogMessage("Media monitor detection: mask=0x%08X (activeAudioNames=%d, unattr=%d, mutedMap=%d, "
                    "browserSkip=%d, audioOnlySkip=%d, noAudioSkip=%d, browserWindows=%d, graceKeep=%d, "
                    "clear=%d, motion=[%d %d %d] fails=[%d %d %d] age=[%u %u %u], reason=%s)",
-                   mask, scan.audioCount, scan.fallback, scan.mutedMap,
+                   mask, scan.audioCount, scan.unattributed, scan.mutedMap,
                    scan.browserSkip, scan.audioOnlySkip, scan.noAudioSkip,
                    scan.ev.browserWindowCount, scan.graceKeep, scan.clear,
                    scan.motionDiff[0], scan.motionDiff[1], scan.motionDiff[2],
